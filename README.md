@@ -14,7 +14,7 @@
 - Exact output match with reference Python implementation across tested dtypes, boundary edge cases, synthetic shapes, and dataset samples.
 - Both original (`relax_HCE`, `approximate_RDP`) and PEP8-compliant (`relax_hce`, `approximate_rdp`) APIs.
 - Portable synthetic integration tests runnable on any environment without external model or dataset assets.
-- Measured 3.4x to 8.5x median speedup across multiple image resolutions.
+- Measured 6.3x to 12.7x median speedup across multiple image resolutions.
 
 ## System Requirements
 
@@ -84,11 +84,11 @@ python test/benchmark_resolutions.py
 
 | Resolution (WxH) | Python Median (IQR) | C++ Median (IQR) | Speedup | Exact Match |
 |:-----------------|:--------------------|:-----------------|:--------|:------------|
-| 256x256          | 6.72 (±0.81) ms     | 0.81 (±0.12) ms  | 8.26x   | YES         |
-| 512x512          | 23.65 (±3.66) ms    | 2.80 (±0.44) ms  | 8.46x   | YES         |
-| 1024x1024        | 94.72 (±4.85) ms    | 12.46 (±1.39) ms | 7.60x   | YES         |
-| 1200x1799        | 181.92 (±9.21) ms   | 45.20 (±0.88) ms | 4.03x   | YES         |
-| 2048x2048        | 379.63 (±94.26) ms  | 110.72 (±10.96) ms | 3.43x | YES         |
+| 256x256          | 8.28 (±1.94) ms     | 0.73 (±0.26) ms  | 11.36x  | YES         |
+| 512x512          | 20.88 (±3.36) ms    | 1.64 (±0.39) ms  | 12.73x  | YES         |
+| 1024x1024        | 95.52 (±3.74) ms    | 9.44 (±0.87) ms  | 10.11x  | YES         |
+| 1200x1799        | 195.43 (±5.11) ms   | 30.72 (±8.60) ms | 6.36x   | YES         |
+| 2048x2048        | 410.29 (±94.12) ms  | 64.74 (±19.91) ms| 6.34x   | YES         |
 
 ### Run All Tests
 

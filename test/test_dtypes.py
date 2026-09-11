@@ -218,6 +218,58 @@ class TestDtypesDifferential(unittest.TestCase):
                 c_res = turbo_hce.relax_HCE(gt, rs, ske)
                 self.assertEqual(py_res, c_res)
 
+    def test_channel_counts_1_3_4_5(self):
+        """Verify 3D inputs with 1, 3, 4, and 5 channels match reference output."""
+        for num_ch in [1, 3, 4, 5]:
+            with self.subTest(channels=num_ch):
+                shape_3d = (32, 32, num_ch)
+                gt = np.zeros(shape_3d, dtype=np.uint8)
+                rs = np.zeros(shape_3d, dtype=np.uint8)
+                gt[8:24, 8:24, 0] = 255
+                rs[12:28, 12:28, 0] = 255
+                if num_ch > 1:
+                    gt[:, :, 1:] = 120
+                    rs[:, :, 1:] = 150
+                ske = np.zeros((32, 32), dtype=bool)
+                ske[16, 8:24] = True
+
+                py_res = py_hce.relax_HCE(gt, rs, ske)
+                c_res = turbo_hce.relax_HCE(gt, rs, ske)
+                self.assertEqual(py_res, c_res)
+
+    def test_vector_lane_boundary_lengths(self):
+        """Verify SIMD lane boundaries (lengths 1, 31, 32, 33, 63, 64, 65)."""
+        for width in [1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 97]:
+            with self.subTest(width=width):
+                shape = (5, width)
+                gt = np.zeros(shape, dtype=np.uint8)
+                rs = np.zeros(shape, dtype=np.uint8)
+                ske = np.zeros(shape, dtype=bool)
+                if width > 4:
+                    gt[1:4, 1:min(width - 1, 30)] = 255
+                    rs[2:4, 2:min(width, 32)] = 255
+                    ske[2, 1:min(width - 1, 30)] = True
+                py_res = py_hce.relax_HCE(gt, rs, ske)
+                c_res = turbo_hce.relax_HCE(gt, rs, ske)
+                self.assertEqual(py_res, c_res)
+
+    def test_float_zeros_and_subnormals(self):
+        """Verify IEEE 754 positive zero, negative zero, and subnormals."""
+        shape = (20, 20)
+        for dtype in [np.float32, np.float64]:
+            with self.subTest(dtype=dtype.__name__):
+                gt = np.full(shape, -0.0, dtype=dtype)
+                rs = np.full(shape, +0.0, dtype=dtype)
+                ske = np.full(shape, -0.0, dtype=dtype)
+
+                ske[10, 5:15] = 1e-40 if dtype == np.float32 else 1e-300
+                gt[5:15, 5:15] = 200.0
+                rs[7:17, 7:17] = 200.0
+
+                py_res = py_hce.relax_HCE(gt, rs, ske)
+                c_res = turbo_hce.relax_HCE(gt, rs, ske)
+                self.assertEqual(py_res, c_res)
+
 
 if __name__ == "__main__":
     unittest.main()

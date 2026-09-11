@@ -9,16 +9,265 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define TURBO_RESTRICT __restrict__
+#elif defined(_MSC_VER)
+#define TURBO_RESTRICT __restrict
+#else
+#define TURBO_RESTRICT
+#endif
+
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace {
+
+static_assert(sizeof(cv::Point) == 2 * sizeof(int32_t), "cv::Point size mismatch");
+static_assert(offsetof(cv::Point, x) == 0, "cv::Point x offset mismatch");
+static_assert(offsetof(cv::Point, y) == sizeof(int32_t), "cv::Point y offset mismatch");
+static_assert(std::is_trivially_copyable<cv::Point>::value, "cv::Point must be trivially copyable");
+
+inline void compute_tp_fp_fn_union(
+    const uint8_t* TURBO_RESTRICT p_gt,
+    const uint8_t* TURBO_RESTRICT p_rs,
+    uint8_t* TURBO_RESTRICT p_tp,
+    uint8_t* TURBO_RESTRICT p_fp,
+    uint8_t* TURBO_RESTRICT p_fn,
+    uint8_t* TURBO_RESTRICT p_union,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i g = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_gt + i));
+        __m256i r = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_rs + i));
+        __m256i tp = _mm256_and_si256(g, r);
+        __m256i fp = _mm256_andnot_si256(g, r);
+        __m256i fn = _mm256_andnot_si256(r, g);
+        __m256i un = _mm256_or_si256(g, r);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_tp + i), tp);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_fp + i), fp);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_fn + i), fn);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_union + i), un);
+    }
+    for (; i < total_pixels; ++i) {
+        uint8_t g = p_gt[i];
+        uint8_t r = p_rs[i];
+        uint8_t tp = g & r;
+        p_tp[i] = tp;
+        p_fp[i] = r - tp;
+        p_fn[i] = g - tp;
+        p_union[i] = g | r;
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        uint8_t g = p_gt[i];
+        uint8_t r = p_rs[i];
+        uint8_t tp = g & r;
+        p_tp[i] = tp;
+        p_fp[i] = r - tp;
+        p_fn[i] = g - tp;
+        p_union[i] = g | r;
+    }
+#endif
+}
+
+inline void compute_complement(
+    const uint8_t* TURBO_RESTRICT p_in,
+    uint8_t* TURBO_RESTRICT p_out,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    const __m256i ones = _mm256_set1_epi8(1);
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_in + i));
+        __m256i res = _mm256_sub_epi8(ones, v);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_out + i), res);
+    }
+    for (; i < total_pixels; ++i) {
+        p_out[i] = 1 - p_in[i];
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        p_out[i] = 1 - p_in[i];
+    }
+#endif
+}
+
+inline void merge_skeleton_fn(
+    const uint8_t* TURBO_RESTRICT p_ske,
+    const uint8_t* TURBO_RESTRICT p_tp,
+    uint8_t* TURBO_RESTRICT p_fn,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i s = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_ske + i));
+        __m256i tp = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_tp + i));
+        __m256i fn_val = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_fn + i));
+        __m256i ske_term = _mm256_andnot_si256(tp, s);
+        __m256i res = _mm256_or_si256(fn_val, ske_term);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_fn + i), res);
+    }
+    for (; i < total_pixels; ++i) {
+        uint8_t s = p_ske[i];
+        uint8_t tp = p_tp[i];
+        p_fn[i] = p_fn[i] | (s & (1 - tp));
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        uint8_t s = p_ske[i];
+        uint8_t tp = p_tp[i];
+        p_fn[i] = p_fn[i] | (s & (1 - tp));
+    }
+#endif
+}
+
+inline void compute_cond_fp(
+    const uint8_t* TURBO_RESTRICT p_tp,
+    const uint8_t* TURBO_RESTRICT p_fn,
+    uint8_t* TURBO_RESTRICT p_cond_fp,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i tp = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_tp + i));
+        __m256i fn_val = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_fn + i));
+        __m256i res = _mm256_or_si256(tp, fn_val);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_cond_fp + i), res);
+    }
+    for (; i < total_pixels; ++i) {
+        p_cond_fp[i] = p_tp[i] | p_fn[i];
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        p_cond_fp[i] = p_tp[i] | p_fn[i];
+    }
+#endif
+}
+
+inline void compute_cond_fn(
+    const uint8_t* TURBO_RESTRICT p_tp,
+    const uint8_t* TURBO_RESTRICT p_fp,
+    const uint8_t* TURBO_RESTRICT p_fn,
+    uint8_t* TURBO_RESTRICT p_cond_fn,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    const __m256i ones = _mm256_set1_epi8(1);
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i tp = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_tp + i));
+        __m256i fp = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_fp + i));
+        __m256i fn_val = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(p_fn + i));
+        __m256i any_set = _mm256_or_si256(tp, _mm256_or_si256(fp, fn_val));
+        __m256i res = _mm256_sub_epi8(ones, any_set);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(p_cond_fn + i), res);
+    }
+    for (; i < total_pixels; ++i) {
+        p_cond_fn[i] = 1 - (p_tp[i] | p_fp[i] | p_fn[i]);
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        p_cond_fn[i] = 1 - (p_tp[i] | p_fp[i] | p_fn[i]);
+    }
+#endif
+}
+
+inline void extract_u8_nonzero(
+    const uint8_t* TURBO_RESTRICT src,
+    uint8_t* TURBO_RESTRICT dst,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i one = _mm256_set1_epi8(1);
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        __m256i is_zero = _mm256_cmpeq_epi8(v, zero);
+        __m256i is_nonzero = _mm256_andnot_si256(is_zero, one);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), is_nonzero);
+    }
+    for (; i < total_pixels; ++i) {
+        dst[i] = (src[i] != 0) ? 1 : 0;
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        dst[i] = (src[i] != 0) ? 1 : 0;
+    }
+#endif
+}
+
+inline void extract_u8_gt128(
+    const uint8_t* TURBO_RESTRICT src,
+    uint8_t* TURBO_RESTRICT dst,
+    size_t total_pixels
+) {
+#if defined(__AVX2__)
+    size_t i = 0;
+    const __m256i thresh = _mm256_set1_epi8(static_cast<char>(128));
+    const __m256i one = _mm256_set1_epi8(1);
+    const __m256i zero = _mm256_setzero_si256();
+    for (; i + 32 <= total_pixels; i += 32) {
+        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(src + i));
+        __m256i v_signed = _mm256_xor_si256(v, thresh);
+        __m256i is_gt = _mm256_cmpgt_epi8(v_signed, zero);
+        __m256i res = _mm256_and_si256(is_gt, one);
+        _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), res);
+    }
+    for (; i < total_pixels; ++i) {
+        dst[i] = (src[i] > 128) ? 1 : 0;
+    }
+#else
+    for (size_t i = 0; i < total_pixels; ++i) {
+        dst[i] = (src[i] > 128) ? 1 : 0;
+    }
+#endif
+}
+
+template <typename T, typename Pred>
+inline void extract_channel0_loop(
+    const T* TURBO_RESTRICT src,
+    uint8_t* TURBO_RESTRICT dst,
+    size_t total_pixels,
+    int channels,
+    Pred&& pred
+) {
+    if (channels == 1) {
+        for (size_t i = 0; i < total_pixels; ++i) {
+            dst[i] = pred(src[i]) ? 1 : 0;
+        }
+    } else if (channels == 3) {
+        for (size_t i = 0, s = 0; i < total_pixels; ++i, s += 3) {
+            dst[i] = pred(src[s]) ? 1 : 0;
+        }
+    } else if (channels == 4) {
+        for (size_t i = 0, s = 0; i < total_pixels; ++i, s += 4) {
+            dst[i] = pred(src[s]) ? 1 : 0;
+        }
+    } else {
+        const size_t ch = static_cast<size_t>(channels);
+        for (size_t i = 0, s = 0; i < total_pixels; ++i, s += ch) {
+            dst[i] = pred(src[s]) ? 1 : 0;
+        }
+    }
+}
 
 class ScopedPyRef {
     PyObject* ptr_;
@@ -87,8 +336,12 @@ std::pair<std::vector<std::vector<cv::Point>>, double> filter_bdy_cond_impl(
 
     int h = cond_u8.rows;
     int w = cond_u8.cols;
-    cv::Mat ind_map = cv::Mat::zeros(h, w, CV_32S);
+    cv::Mat ind_map = cv::Mat::zeros(h, w, CV_8U);
     std::vector<std::vector<cv::Point>> boundaries;
+
+    const uint8_t* TURBO_RESTRICT p_cond_dilated = cond_dilated.ptr<uint8_t>();
+    uint8_t* TURBO_RESTRICT p_ind_map = ind_map.ptr<uint8_t>();
+    const int32_t* TURBO_RESTRICT p_labels = labels.ptr<int32_t>();
 
     for (size_t i = 0; i < bdy_.size(); ++i) {
         std::vector<std::vector<cv::Point>> tmp_bdies;
@@ -103,7 +356,8 @@ std::pair<std::vector<std::vector<cv::Point>>, double> filter_bdy_cond_impl(
                 continue;
             }
 
-            if (cond_dilated.at<uint8_t>(r, c) == 0 || ind_map.at<int32_t>(r, c) != 0) {
+            size_t pixel_idx = static_cast<size_t>(r) * w + static_cast<size_t>(c);
+            if (p_cond_dilated[pixel_idx] == 0 || p_ind_map[pixel_idx] != 0) {
                 if (!tmp_bdy.empty()) {
                     tmp_bdies.push_back(std::move(tmp_bdy));
                     tmp_bdy.clear();
@@ -112,8 +366,8 @@ std::pair<std::vector<std::vector<cv::Point>>, double> filter_bdy_cond_impl(
             }
 
             tmp_bdy.push_back(cv::Point(c, r));
-            ind_map.at<int32_t>(r, c) += 1;
-            int lbl = labels.at<int32_t>(r, c);
+            p_ind_map[pixel_idx] = 1;
+            int lbl = p_labels[pixel_idx];
             if (lbl >= 0 && lbl < num_labels) {
                 indep[lbl] = 0;
             }
@@ -146,14 +400,13 @@ std::pair<std::vector<std::vector<cv::Point>>, double> filter_bdy_cond_impl(
         }
     }
 
-    double indep_sum = 0.0;
+    int64_t indep_sum = 0;
+    const uint8_t* TURBO_RESTRICT indep_ptr = indep.data();
     for (int i = 1; i < num_labels; ++i) {
-        if (indep[i]) {
-            indep_sum += 1.0;
-        }
+        indep_sum += indep_ptr[i];
     }
 
-    return {boundaries, indep_sum};
+    return {boundaries, static_cast<double>(indep_sum)};
 }
 
 int approximate_RDP_cnt(const std::vector<std::vector<cv::Point>>& boundaries, double epsilon) {
@@ -192,23 +445,11 @@ HCEOutput relax_HCE_impl(
     cv::Mat FN(h, w, CV_8U);
     cv::Mat Union(h, w, CV_8U);
 
-    const uint8_t* p_gt_b = gt_bin.data;
-    const uint8_t* p_rs_b = rs_bin.data;
-    const uint8_t* p_ske_b = ske_bin.data;
-    uint8_t* p_tp = TP.data;
-    uint8_t* p_fp = FP.data;
-    uint8_t* p_fn = FN.data;
-    uint8_t* p_union = Union.data;
-
-    for (size_t i = 0; i < total_pixels; ++i) {
-        uint8_t g = p_gt_b[i];
-        uint8_t r = p_rs_b[i];
-        uint8_t tp = g & r;
-        p_tp[i] = tp;
-        p_fp[i] = r - tp;
-        p_fn[i] = g - tp;
-        p_union[i] = g | r;
-    }
+    compute_tp_fp_fn_union(
+        gt_bin.data, rs_bin.data,
+        TP.data, FP.data, FN.data, Union.data,
+        total_pixels
+    );
 
     cv::Mat Union_erode;
     if (relax > 0) {
@@ -220,50 +461,39 @@ HCEOutput relax_HCE_impl(
     cv::Mat FP_;
     cv::bitwise_and(FP, Union_erode, FP_);
 
-    cv::Mat not_TP_or_FN(h, w, CV_8U);
-    uint8_t* p_not_tp_fn = not_TP_or_FN.data;
-    for (size_t i = 0; i < total_pixels; ++i) {
-        p_not_tp_fn[i] = 1 - p_gt_b[i];
-    }
+    if (relax > 0) {
+        cv::Mat not_TP_or_FN(h, w, CV_8U);
+        compute_complement(gt_bin.data, not_TP_or_FN.data, total_pixels);
 
-    for (int i = 0; i < relax; ++i) {
-        cv::dilate(FP_, FP_, kernel);
-        cv::bitwise_and(FP_, not_TP_or_FN, FP_);
+        for (int i = 0; i < relax; ++i) {
+            cv::dilate(FP_, FP_, kernel);
+            cv::bitwise_and(FP_, not_TP_or_FN, FP_);
+        }
+        cv::bitwise_and(FP, FP_, FP_);
     }
-    cv::bitwise_and(FP, FP_, FP_);
 
     cv::Mat FN_;
     cv::bitwise_and(FN, Union_erode, FN_);
 
-    cv::Mat not_TP_or_FP(h, w, CV_8U);
-    uint8_t* p_not_tp_fp = not_TP_or_FP.data;
-    for (size_t i = 0; i < total_pixels; ++i) {
-        p_not_tp_fp[i] = 1 - p_rs_b[i];
+    if (relax > 0) {
+        cv::Mat not_TP_or_FP(h, w, CV_8U);
+        compute_complement(rs_bin.data, not_TP_or_FP.data, total_pixels);
+
+        for (int i = 0; i < relax; ++i) {
+            cv::dilate(FN_, FN_, kernel);
+            cv::bitwise_and(FN_, not_TP_or_FP, FN_);
+        }
+        cv::bitwise_and(FN, FN_, FN_);
     }
 
-    for (int i = 0; i < relax; ++i) {
-        cv::dilate(FN_, FN_, kernel);
-        cv::bitwise_and(FN_, not_TP_or_FP, FN_);
-    }
-    cv::bitwise_and(FN, FN_, FN_);
-
-    uint8_t* p_fn_ = FN_.data;
-    for (size_t i = 0; i < total_pixels; ++i) {
-        uint8_t s = p_ske_b[i];
-        uint8_t tp = p_tp[i];
-        uint8_t ske_term = s ^ (tp & s);
-        p_fn_[i] = p_fn_[i] | ske_term;
-    }
+    merge_skeleton_fn(ske_bin.data, TP.data, FN_.data, total_pixels);
 
     std::vector<std::vector<cv::Point>> ctrs_FP;
     std::vector<cv::Vec4i> hier_FP;
     cv::findContours(FP_, ctrs_FP, hier_FP, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
 
     cv::Mat cond_FP(h, w, CV_8U);
-    uint8_t* p_cond_fp = cond_FP.data;
-    for (size_t i = 0; i < total_pixels; ++i) {
-        p_cond_fp[i] = p_tp[i] | p_fn_[i];
-    }
+    compute_cond_fp(TP.data, FN_.data, cond_FP.data, total_pixels);
 
     auto [bdies_FP, indep_cnt_FP] = filter_bdy_cond_impl(ctrs_FP, FP_, cond_FP, kernel);
 
@@ -272,11 +502,7 @@ HCEOutput relax_HCE_impl(
     cv::findContours(FN_, ctrs_FN, hier_FN, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
 
     cv::Mat cond_FN(h, w, CV_8U);
-    uint8_t* p_cond_fn = cond_FN.data;
-    const uint8_t* p_fp_ = FP_.data;
-    for (size_t i = 0; i < total_pixels; ++i) {
-        p_cond_fn[i] = 1 - (p_tp[i] | p_fp_[i] | p_fn_[i]);
-    }
+    compute_cond_fn(TP.data, FP_.data, FN_.data, cond_FN.data, total_pixels);
 
     auto [bdies_FN, indep_cnt_FN] = filter_bdy_cond_impl(ctrs_FN, FN_, cond_FN, kernel);
 
@@ -343,54 +569,77 @@ bool extract_binarized_2d(
     int h = static_cast<int>(orig_dims[0]);
     int w = static_cast<int>(orig_dims[1]);
     int channels = (orig_ndim == 3) ? static_cast<int>(orig_dims[2]) : 1;
+    size_t total_pixels = static_cast<size_t>(h) * w;
 
     out_mat.create(h, w, CV_8U);
     uint8_t* dst = out_mat.data;
 
     int type = PyArray_TYPE(reinterpret_cast<PyArrayObject*>(contig.get()));
-
-    #define EXTRACT_TYPED(CTYPE, COND_EXPR) \
-        do { \
-            const CTYPE* src = static_cast<const CTYPE*>( \
-                PyArray_DATA(reinterpret_cast<PyArrayObject*>(contig.get())) \
-            ); \
-            size_t out_idx = 0; \
-            for (int r = 0; r < h; ++r) { \
-                size_t row_offset = static_cast<size_t>(r) * w * channels; \
-                for (int c = 0; c < w; ++c) { \
-                    CTYPE val = src[row_offset + static_cast<size_t>(c) * channels]; \
-                    dst[out_idx++] = (COND_EXPR) ? 1 : 0; \
-                } \
-            } \
-        } while (0)
+    const void* raw_data = PyArray_DATA(reinterpret_cast<PyArrayObject*>(contig.get()));
 
     if (is_skeleton) {
         switch (type) {
             case NPY_BOOL:
-            case NPY_UINT8:
-                EXTRACT_TYPED(uint8_t, val != 0);
+            case NPY_UINT8: {
+                const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+                if (channels == 1) {
+                    extract_u8_nonzero(src, dst, total_pixels);
+                } else {
+                    extract_channel0_loop(src, dst, total_pixels, channels, [](uint8_t val) {
+                        return val != 0;
+                    });
+                }
                 break;
-            case NPY_INT8:
-                EXTRACT_TYPED(int8_t, val != 0);
+            }
+            case NPY_INT8: {
+                const int8_t* src = static_cast<const int8_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int8_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_UINT16:
-                EXTRACT_TYPED(uint16_t, val != 0);
+            }
+            case NPY_UINT16: {
+                const uint16_t* src = static_cast<const uint16_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint16_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_INT16:
-                EXTRACT_TYPED(int16_t, val != 0);
+            }
+            case NPY_INT16: {
+                const int16_t* src = static_cast<const int16_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int16_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_UINT32:
-                EXTRACT_TYPED(uint32_t, val != 0);
+            }
+            case NPY_UINT32: {
+                const uint32_t* src = static_cast<const uint32_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint32_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_INT32:
-                EXTRACT_TYPED(int32_t, val != 0);
+            }
+            case NPY_INT32: {
+                const int32_t* src = static_cast<const int32_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int32_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_UINT64:
-                EXTRACT_TYPED(uint64_t, val != 0);
+            }
+            case NPY_UINT64: {
+                const uint64_t* src = static_cast<const uint64_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint64_t val) {
+                    return val != 0;
+                });
                 break;
-            case NPY_INT64:
-                EXTRACT_TYPED(int64_t, val != 0);
+            }
+            case NPY_INT64: {
+                const int64_t* src = static_cast<const int64_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int64_t val) {
+                    return val != 0;
+                });
                 break;
+            }
             case NPY_FLOAT16: {
                 ScopedPyRef f32_arr(reinterpret_cast<PyObject*>(
                     PyArray_Cast(reinterpret_cast<PyArrayObject*>(contig.get()), NPY_FLOAT32)
@@ -401,22 +650,25 @@ bool extract_binarized_2d(
                 const float* src = static_cast<const float*>(
                     PyArray_DATA(reinterpret_cast<PyArrayObject*>(f32_arr.get()))
                 );
-                size_t out_idx = 0;
-                for (int r = 0; r < h; ++r) {
-                    size_t row_offset = static_cast<size_t>(r) * w * channels;
-                    for (int c = 0; c < w; ++c) {
-                        float val = src[row_offset + static_cast<size_t>(c) * channels];
-                        dst[out_idx++] = (std::isnan(val) || val != 0.0f) ? 1 : 0;
-                    }
-                }
+                extract_channel0_loop(src, dst, total_pixels, channels, [](float val) {
+                    return val != 0.0f;
+                });
                 break;
             }
-            case NPY_FLOAT32:
-                EXTRACT_TYPED(float, std::isnan(val) || val != 0.0f);
+            case NPY_FLOAT32: {
+                const float* src = static_cast<const float*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](float val) {
+                    return val != 0.0f;
+                });
                 break;
-            case NPY_FLOAT64:
-                EXTRACT_TYPED(double, std::isnan(val) || val != 0.0);
+            }
+            case NPY_FLOAT64: {
+                const double* src = static_cast<const double*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](double val) {
+                    return val != 0.0;
+                });
                 break;
+            }
             default:
                 PyErr_Format(PyExc_TypeError, "Unsupported dtype for %s", arg_name);
                 return false;
@@ -424,32 +676,62 @@ bool extract_binarized_2d(
     } else {
         switch (type) {
             case NPY_BOOL:
-                std::memset(dst, 0, static_cast<size_t>(h) * w);
-                break;
-            case NPY_UINT8:
-                EXTRACT_TYPED(uint8_t, val > 128);
-                break;
             case NPY_INT8:
-                std::memset(dst, 0, static_cast<size_t>(h) * w);
+                std::memset(dst, 0, total_pixels);
                 break;
-            case NPY_UINT16:
-                EXTRACT_TYPED(uint16_t, val > 128);
+            case NPY_UINT8: {
+                const uint8_t* src = static_cast<const uint8_t*>(raw_data);
+                if (channels == 1) {
+                    extract_u8_gt128(src, dst, total_pixels);
+                } else {
+                    extract_channel0_loop(src, dst, total_pixels, channels, [](uint8_t val) {
+                        return val > 128;
+                    });
+                }
                 break;
-            case NPY_INT16:
-                EXTRACT_TYPED(int16_t, val > 128);
+            }
+            case NPY_UINT16: {
+                const uint16_t* src = static_cast<const uint16_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint16_t val) {
+                    return val > 128;
+                });
                 break;
-            case NPY_UINT32:
-                EXTRACT_TYPED(uint32_t, val > 128);
+            }
+            case NPY_INT16: {
+                const int16_t* src = static_cast<const int16_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int16_t val) {
+                    return val > 128;
+                });
                 break;
-            case NPY_INT32:
-                EXTRACT_TYPED(int32_t, val > 128);
+            }
+            case NPY_UINT32: {
+                const uint32_t* src = static_cast<const uint32_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint32_t val) {
+                    return val > 128;
+                });
                 break;
-            case NPY_UINT64:
-                EXTRACT_TYPED(uint64_t, val > 128);
+            }
+            case NPY_INT32: {
+                const int32_t* src = static_cast<const int32_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int32_t val) {
+                    return val > 128;
+                });
                 break;
-            case NPY_INT64:
-                EXTRACT_TYPED(int64_t, val > 128);
+            }
+            case NPY_UINT64: {
+                const uint64_t* src = static_cast<const uint64_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](uint64_t val) {
+                    return val > 128;
+                });
                 break;
+            }
+            case NPY_INT64: {
+                const int64_t* src = static_cast<const int64_t*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](int64_t val) {
+                    return val > 128;
+                });
+                break;
+            }
             case NPY_FLOAT16: {
                 ScopedPyRef f32_arr(reinterpret_cast<PyObject*>(
                     PyArray_Cast(reinterpret_cast<PyArrayObject*>(contig.get()), NPY_FLOAT32)
@@ -460,28 +742,30 @@ bool extract_binarized_2d(
                 const float* src = static_cast<const float*>(
                     PyArray_DATA(reinterpret_cast<PyArrayObject*>(f32_arr.get()))
                 );
-                size_t out_idx = 0;
-                for (int r = 0; r < h; ++r) {
-                    size_t row_offset = static_cast<size_t>(r) * w * channels;
-                    for (int c = 0; c < w; ++c) {
-                        float val = src[row_offset + static_cast<size_t>(c) * channels];
-                        dst[out_idx++] = (!std::isnan(val) && val > 128.0f) ? 1 : 0;
-                    }
-                }
+                extract_channel0_loop(src, dst, total_pixels, channels, [](float val) {
+                    return val > 128.0f;
+                });
                 break;
             }
-            case NPY_FLOAT32:
-                EXTRACT_TYPED(float, !std::isnan(val) && val > 128.0f);
+            case NPY_FLOAT32: {
+                const float* src = static_cast<const float*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](float val) {
+                    return val > 128.0f;
+                });
                 break;
-            case NPY_FLOAT64:
-                EXTRACT_TYPED(double, !std::isnan(val) && val > 128.0);
+            }
+            case NPY_FLOAT64: {
+                const double* src = static_cast<const double*>(raw_data);
+                extract_channel0_loop(src, dst, total_pixels, channels, [](double val) {
+                    return val > 128.0;
+                });
                 break;
+            }
             default:
                 PyErr_Format(PyExc_TypeError, "Unsupported dtype for %s", arg_name);
                 return false;
         }
     }
-    #undef EXTRACT_TYPED
 
     return true;
 }
@@ -566,12 +850,9 @@ bool parse_contours_list(
             PyArray_DATA(reinterpret_cast<PyArrayObject*>(contig.get()))
         );
 
-        std::vector<cv::Point> contour;
-        contour.reserve(static_cast<size_t>(n_pts));
-        for (npy_intp j = 0; j < n_pts; ++j) {
-            int x = data[j * 2];
-            int y = data[j * 2 + 1];
-            contour.push_back(cv::Point(x, y));
+        std::vector<cv::Point> contour(static_cast<size_t>(n_pts));
+        if (n_pts > 0) {
+            std::memcpy(contour.data(), data, static_cast<size_t>(n_pts) * sizeof(cv::Point));
         }
 
         out_bdy.push_back(std::move(contour));
@@ -593,9 +874,8 @@ PyObject* boundaries_to_py_list(const std::vector<std::vector<cv::Point>>& bound
         }
 
         int32_t* data = static_cast<int32_t*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-        for (size_t j = 0; j < boundaries[i].size(); ++j) {
-            data[j * 2] = boundaries[i][j].x;
-            data[j * 2 + 1] = boundaries[i][j].y;
+        if (!boundaries[i].empty()) {
+            std::memcpy(data, boundaries[i].data(), boundaries[i].size() * sizeof(cv::Point));
         }
 
         PyList_SET_ITEM(py_list.get(), i, arr);
@@ -938,9 +1218,8 @@ static PyObject* approximate_RDP_inner(PyObject* args, PyObject* kwargs) {
         }
 
         int32_t* data = static_cast<int32_t*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-        for (int j = 0; j < len; ++j) {
-            data[j * 2] = approx_list[i][j].x;
-            data[j * 2 + 1] = approx_list[i][j].y;
+        if (len > 0) {
+            std::memcpy(data, approx_list[i].data(), static_cast<size_t>(len) * sizeof(cv::Point));
         }
 
         PyList_SET_ITEM(py_boundaries_out.get(), i, arr);
