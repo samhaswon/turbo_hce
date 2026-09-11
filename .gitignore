@@ -11,3 +11,4 @@
 *.exe
 **build/
 **dist/
+src/turbo_hce.egg-info/

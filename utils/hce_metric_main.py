@@ -1,7 +1,5 @@
 ## hce_metric.py
 import numpy as np
-from skimage import io
-import matplotlib.pyplot as plt
 import cv2 as cv
 from skimage.morphology import skeletonize
 from skimage.morphology import erosion, dilation, disk
