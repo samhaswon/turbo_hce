@@ -9,3 +9,5 @@
 *.pyd
 *.dll
 *.exe
+**build/
+**dist/
