@@ -27,6 +27,7 @@ class TestSmokeTurboHCE(unittest.TestCase):
         self.assertTrue(hasattr(turbo_hce, "filter_bdy_cond"))
         self.assertTrue(hasattr(turbo_hce, "approximate_RDP"))
         self.assertTrue(hasattr(turbo_hce, "approximate_rdp"))
+        self.assertTrue(hasattr(turbo_hce, "skeletonize"))
 
     def test_empty_masks(self):
         """Verify relax_HCE returns zeroes for all-zero masks."""

@@ -130,8 +130,12 @@ elif sys.platform == "win32":
 
 turbo_hce_ext = Extension(
     name="turbo_hce._turbo_hce",
-    sources=[os.path.join("src", "turbo_hce", "_turbo_hce.cpp")],
+    sources=[
+        os.path.join("src", "turbo_hce", "_turbo_hce.cpp"),
+        os.path.join("src", "turbo_hce", "skeletonize.cpp"),
+    ],
     include_dirs=[
+        os.path.join(REPO_ROOT, "src", "turbo_hce"),
         opencv_dir,
         os.path.join(OPENCV_SRC, "modules", "core", "include"),
         os.path.join(OPENCV_SRC, "modules", "imgproc", "include"),

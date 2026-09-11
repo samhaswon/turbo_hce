@@ -7,6 +7,8 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/geometry.hpp>
 
+#include "skeletonize.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -851,8 +853,10 @@ bool parse_contours_list(
         );
 
         std::vector<cv::Point> contour(static_cast<size_t>(n_pts));
-        if (n_pts > 0) {
-            std::memcpy(contour.data(), data, static_cast<size_t>(n_pts) * sizeof(cv::Point));
+        cv::Point* TURBO_RESTRICT pts = contour.data();
+        for (npy_intp j = 0; j < n_pts; ++j) {
+            pts[j].x = data[j * 2];
+            pts[j].y = data[j * 2 + 1];
         }
 
         out_bdy.push_back(std::move(contour));
@@ -873,9 +877,13 @@ PyObject* boundaries_to_py_list(const std::vector<std::vector<cv::Point>>& bound
             return nullptr;
         }
 
-        int32_t* data = static_cast<int32_t*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-        if (!boundaries[i].empty()) {
-            std::memcpy(data, boundaries[i].data(), boundaries[i].size() * sizeof(cv::Point));
+        int32_t* TURBO_RESTRICT data = static_cast<int32_t*>(
+            PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr))
+        );
+        const cv::Point* TURBO_RESTRICT pts = boundaries[i].data();
+        for (size_t j = 0; j < boundaries[i].size(); ++j) {
+            data[j * 2] = pts[j].x;
+            data[j * 2 + 1] = pts[j].y;
         }
 
         PyList_SET_ITEM(py_list.get(), i, arr);
@@ -1217,9 +1225,13 @@ static PyObject* approximate_RDP_inner(PyObject* args, PyObject* kwargs) {
             return nullptr;
         }
 
-        int32_t* data = static_cast<int32_t*>(PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr)));
-        if (len > 0) {
-            std::memcpy(data, approx_list[i].data(), static_cast<size_t>(len) * sizeof(cv::Point));
+        int32_t* TURBO_RESTRICT data = static_cast<int32_t*>(
+            PyArray_DATA(reinterpret_cast<PyArrayObject*>(arr))
+        );
+        const cv::Point* TURBO_RESTRICT pts = approx_list[i].data();
+        for (int j = 0; j < len; ++j) {
+            data[j * 2] = pts[j].x;
+            data[j * 2 + 1] = pts[j].y;
         }
 
         PyList_SET_ITEM(py_boundaries_out.get(), i, arr);
@@ -1284,6 +1296,136 @@ static PyObject* py_approximate_RDP(PyObject* /*self*/, PyObject* args, PyObject
     }
 }
 
+static PyObject* skeletonize_inner(PyObject* args, PyObject* kwargs) {
+    static const char* kwlist[] = {"image", nullptr};
+    PyObject* py_image = nullptr;
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "O:skeletonize", const_cast<char**>(kwlist),
+            &py_image)) {
+        return nullptr;
+    }
+
+    if (!PyArray_Check(py_image)) {
+        PyErr_SetString(PyExc_TypeError, "image must be a numpy ndarray");
+        return nullptr;
+    }
+
+    PyArrayObject* orig_arr = reinterpret_cast<PyArrayObject*>(py_image);
+    if (PyArray_TYPE(orig_arr) == NPY_OBJECT || PyDataType_ISOBJECT(PyArray_DESCR(orig_arr))) {
+        PyErr_SetString(PyExc_TypeError, "object arrays are not supported");
+        return nullptr;
+    }
+
+    int orig_ndim = PyArray_NDIM(orig_arr);
+    if (orig_ndim != 2) {
+        PyErr_Format(PyExc_ValueError, "image must be a 2D array, got %d dimensions", orig_ndim);
+        return nullptr;
+    }
+
+    npy_intp* dims = PyArray_SHAPE(orig_arr);
+    npy_intp h = dims[0];
+    npy_intp w = dims[1];
+
+    if (h < 0 || w < 0) {
+        PyErr_SetString(PyExc_ValueError, "image dimensions cannot be negative");
+        return nullptr;
+    }
+
+    if (h == 0 || w == 0) {
+        npy_intp out_dims[2] = {h, w};
+        return PyArray_SimpleNew(2, out_dims, NPY_BOOL);
+    }
+
+    cv::Mat in_mat;
+    if (!extract_binarized_2d(py_image, "image", true, false, in_mat)) {
+        return nullptr;
+    }
+
+    std::vector<uint8_t> skeleton;
+    char err_buf[256] = {0};
+    int err_type = 0;
+
+    Py_BEGIN_ALLOW_THREADS
+    try {
+        skeleton = turbo_hce::morphology::skeletonize_zhang_suen(
+            in_mat.data, static_cast<size_t>(h), static_cast<size_t>(w)
+        );
+    } catch (const std::bad_alloc&) {
+        err_type = 1;
+    } catch (const std::length_error& e) {
+        err_type = 2;
+        std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
+    } catch (const std::invalid_argument& e) {
+        err_type = 2;
+        std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
+    } catch (const std::exception& e) {
+        err_type = 3;
+        std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
+    } catch (...) {
+        err_type = 3;
+        std::strncpy(err_buf, "Unknown C++ exception occurred during skeletonize", sizeof(err_buf) - 1);
+    }
+    Py_END_ALLOW_THREADS
+
+    if (err_type == 1) {
+        return PyErr_NoMemory();
+    }
+    if (err_type == 2) {
+        PyErr_SetString(PyExc_ValueError, err_buf);
+        return nullptr;
+    }
+    if (err_type == 3) {
+        PyErr_SetString(PyExc_RuntimeError, err_buf);
+        return nullptr;
+    }
+
+    npy_intp out_dims[2] = {h, w};
+    PyObject* out_arr = PyArray_SimpleNew(2, out_dims, NPY_BOOL);
+    if (!out_arr) {
+        return nullptr;
+    }
+
+    std::memcpy(
+        PyArray_DATA(reinterpret_cast<PyArrayObject*>(out_arr)),
+        skeleton.data(),
+        skeleton.size()
+    );
+
+    return out_arr;
+}
+
+static PyObject* py_skeletonize(PyObject* /*self*/, PyObject* args, PyObject* kwargs) noexcept {
+    try {
+        return skeletonize_inner(args, kwargs);
+    } catch (const std::bad_alloc&) {
+        return PyErr_NoMemory();
+    } catch (const std::length_error& e) {
+        if (!PyErr_Occurred()) {
+            const char* msg = e.what();
+            PyErr_SetString(PyExc_ValueError, msg ? msg : "Length error in skeletonize");
+        }
+        return nullptr;
+    } catch (const std::invalid_argument& e) {
+        if (!PyErr_Occurred()) {
+            const char* msg = e.what();
+            PyErr_SetString(PyExc_ValueError, msg ? msg : "Invalid argument in skeletonize");
+        }
+        return nullptr;
+    } catch (const std::exception& e) {
+        if (!PyErr_Occurred()) {
+            const char* msg = e.what();
+            PyErr_SetString(PyExc_RuntimeError, msg ? msg : "C++ exception in skeletonize");
+        }
+        return nullptr;
+    } catch (...) {
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception occurred in skeletonize");
+        }
+        return nullptr;
+    }
+}
+
 static PyMethodDef TurboHCEMethods[] = {
     {"relax_HCE", reinterpret_cast<PyCFunction>(py_relax_HCE), METH_VARARGS | METH_KEYWORDS,
      "Compute relaxed Human Correction Effort (HCE) components."},
@@ -1298,6 +1440,9 @@ static PyMethodDef TurboHCEMethods[] = {
     {"approximate_rdp", reinterpret_cast<PyCFunction>(py_approximate_RDP),
      METH_VARARGS | METH_KEYWORDS,
      "Approximate boundaries using the Ramer-Douglas-Peucker algorithm."},
+    {"skeletonize", reinterpret_cast<PyCFunction>(py_skeletonize),
+     METH_VARARGS | METH_KEYWORDS,
+     "Compute 2D Zhang-Suen morphological skeleton of a binary image."},
     {nullptr, nullptr, 0, nullptr}
 };
 

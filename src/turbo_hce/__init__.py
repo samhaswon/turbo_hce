@@ -9,6 +9,7 @@ from ._turbo_hce import (
     filter_bdy_cond as _filter_bdy_cond,
     approximate_RDP as _approximate_RDP,
     approximate_rdp as _approximate_rdp,
+    skeletonize as _skeletonize,
 )
 
 __version__ = "0.1.0"
@@ -98,11 +99,26 @@ def approximate_rdp(
     return _approximate_rdp(boundaries, epsilon=epsilon)
 
 
+def skeletonize(image: np.ndarray) -> np.ndarray:
+    """
+    Compute the 2D Zhang-Suen morphological skeleton of a binary image.
+
+    Matches the default 2D behavior of skimage.morphology.skeletonize,
+    treating every nonzero element as foreground and returning a boolean array.
+
+    :param image: 2D array of boolean or numeric dtype.
+    :return: 2D boolean array of the skeleton.
+    """
+    return _skeletonize(image)
+
+
 __all__ = [
     "relax_HCE",
     "relax_hce",
     "filter_bdy_cond",
     "approximate_RDP",
     "approximate_rdp",
+    "skeletonize",
     "__version__",
 ]
+

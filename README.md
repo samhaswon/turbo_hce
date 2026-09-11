@@ -12,9 +12,10 @@
 - Enforced memory alignment via `NPY_ARRAY_ALIGNED` preventing undefined behavior on unaligned NumPy buffers.
 - Complete `noexcept` C++ exception boundary protecting the CPython ABI against process aborts: OpenCV assertions, memory errors (`std::bad_alloc`), and sequence length errors (`std::length_error`) are safely converted into standard Python exceptions.
 - Exact output match with reference Python implementation across tested dtypes, boundary edge cases, synthetic shapes, and dataset samples.
+- Native C++ Zhang-Suen 2D morphological skeletonization algorithm (`turbo_hce.skeletonize`) matching `skimage.morphology.skeletonize` output bit-for-bit.
 - Both original (`relax_HCE`, `approximate_RDP`) and PEP8-compliant (`relax_hce`, `approximate_rdp`) APIs.
 - Portable synthetic integration tests runnable on any environment without external model or dataset assets.
-- Measured 6.3x to 12.7x median speedup across multiple image resolutions.
+- Measured 6.1x to 12.7x median speedup for relax_HCE across multiple image resolutions.
 
 ## System Requirements
 
@@ -59,6 +60,14 @@ Runs table-driven differential tests comparing Python reference vs C++ across al
 python -m unittest test/test_dtypes.py -v
 ```
 
+### Skeletonize Equivalence Tests
+
+Runs unit tests verifying `turbo_hce.skeletonize` bit-exact output equivalence with `skimage.morphology.skeletonize` across boundary conditions, degenerate/empty arrays, non-contiguous views, and randomized binary patterns:
+
+```bash
+python -m unittest test/test_skeletonize.py -v
+```
+
 ### Full Correctness and Portable Integration Tests
 
 Runs deterministic synthetic integration tests (no external files required) plus full end-to-end evaluation using the SUNet ONNX model and dataset images when available:
@@ -82,13 +91,25 @@ python test/benchmark_resolutions.py
 - **Environment**: Python 3.12.3, NumPy 2.5.3, OpenCV 5.0.0
 - **Methodology**: 10 interleaved repetitions per resolution, reporting median and interquartile range (IQR):
 
+##### `relax_HCE` (Python vs Turbo HCE C++)
+
 | Resolution (WxH) | Python Median (IQR) | C++ Median (IQR) | Speedup | Exact Match |
 |:-----------------|:--------------------|:-----------------|:--------|:------------|
-| 256x256          | 8.28 (±1.94) ms     | 0.73 (±0.26) ms  | 11.36x  | YES         |
-| 512x512          | 20.88 (±3.36) ms    | 1.64 (±0.39) ms  | 12.73x  | YES         |
-| 1024x1024        | 95.52 (±3.74) ms    | 9.44 (±0.87) ms  | 10.11x  | YES         |
-| 1200x1799        | 195.43 (±5.11) ms   | 30.72 (±8.60) ms | 6.36x   | YES         |
-| 2048x2048        | 410.29 (±94.12) ms  | 64.74 (±19.91) ms| 6.34x   | YES         |
+| 256x256          | 7.00 (±0.94) ms     | 0.55 (±0.10) ms  | 12.65x  | YES         |
+| 512x512          | 20.10 (±1.26) ms    | 1.59 (±0.11) ms  | 12.62x  | YES         |
+| 1024x1024        | 91.49 (±3.68) ms    | 9.10 (±1.53) ms  | 10.05x  | YES         |
+| 1200x1799        | 182.46 (±5.28) ms   | 26.97 (±7.15) ms | 6.76x   | YES         |
+| 2048x2048        | 395.99 (±41.86) ms  | 64.62 (±7.94) ms | 6.13x   | YES         |
+
+##### `skeletonize` (`skimage.morphology.skeletonize` vs `turbo_hce.skeletonize`)
+
+| Resolution (WxH) | skimage Median (IQR) | Turbo Median (IQR) | Speedup | Exact Match |
+|:-----------------|:---------------------|:-------------------|:--------|:------------|
+| 256x256          | 4.39 (±0.12) ms      | 4.39 (±0.15) ms    | 1.00x   | YES         |
+| 512x512          | 31.39 (±0.80) ms     | 33.99 (±3.16) ms   | 0.92x   | YES         |
+| 1024x1024        | 234.70 (±24.86) ms   | 268.82 (±46.38) ms | 0.87x   | YES         |
+| 1200x1799        | 841.31 (±28.70) ms   | 872.34 (±40.82) ms | 0.96x   | YES         |
+| 2048x2048        | 1837.32 (±27.38) ms  | 1867.78 (±160.48) ms| 0.98x  | YES         |
 
 ### Run All Tests
 
@@ -101,12 +122,11 @@ python -m unittest discover -s test -v
 ```python
 import cv2 as cv
 import numpy as np
-from skimage.morphology import skeletonize
 import turbo_hce
 
 gt = cv.imread("/path/to/ground_truth.png", cv.IMREAD_GRAYSCALE)
 pred = cv.imread("/path/to/prediction.png", cv.IMREAD_GRAYSCALE)
-ske = skeletonize(gt > 128)
+ske = turbo_hce.skeletonize(gt > 128)
 
 fp_pts, fp_indep, fn_pts, fn_indep = turbo_hce.relax_HCE(gt, pred, ske)
 print(f"FP points: {fp_pts}, FP indep: {fp_indep}, FN points: {fn_pts}, FN indep: {fn_indep}")
@@ -114,4 +134,4 @@ print(f"FP points: {fp_pts}, FP indep: {fp_indep}, FN points: {fn_pts}, FN indep
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](file:///home/samuel/code_projects/turbo_hce/LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.

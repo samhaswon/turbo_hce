@@ -163,12 +163,77 @@ def benchmark_resolution(
     }
 
 
-def run_all_benchmarks(iterations: int = 10) -> Dict[Tuple[int, int], Dict[str, Any]]:
+def benchmark_skeletonize_resolution(
+    mask: np.ndarray,
+    iterations: int = 10,
+) -> Dict[str, Any]:
     """
-    Execute resolution benchmark suite and print a markdown summary table with metadata.
+    Benchmark skimage vs turbo_hce skeletonize using interleaved execution.
+
+    :param mask: Binary mask array to skeletonize.
+    :param iterations: Number of timed repetitions per implementation.
+    :return: Dictionary containing timing distributions, speedup, and correctness.
+    """
+    sk_warmup = skeletonize(mask)
+    tb_warmup = turbo_hce.skeletonize(mask)
+    matches = bool(np.array_equal(sk_warmup, tb_warmup))
+
+    sk_times: List[float] = []
+    tb_times: List[float] = []
+
+    for i in range(iterations):
+        if i % 2 == 0:
+            t0 = time.perf_counter()
+            skeletonize(mask)
+            t1 = time.perf_counter()
+            sk_times.append((t1 - t0) * 1000.0)
+
+            t2 = time.perf_counter()
+            turbo_hce.skeletonize(mask)
+            t3 = time.perf_counter()
+            tb_times.append((t3 - t2) * 1000.0)
+        else:
+            t0 = time.perf_counter()
+            turbo_hce.skeletonize(mask)
+            t1 = time.perf_counter()
+            tb_times.append((t1 - t0) * 1000.0)
+
+            t2 = time.perf_counter()
+            skeletonize(mask)
+            t3 = time.perf_counter()
+            sk_times.append((t3 - t2) * 1000.0)
+
+    sk_median = float(np.median(sk_times))
+    tb_median = float(np.median(tb_times))
+    sk_q25, sk_q75 = (
+        float(np.percentile(sk_times, 25)),
+        float(np.percentile(sk_times, 75)),
+    )
+    tb_q25, tb_q75 = (
+        float(np.percentile(tb_times, 25)),
+        float(np.percentile(tb_times, 75)),
+    )
+    sk_iqr = sk_q75 - sk_q25
+    tb_iqr = tb_q75 - tb_q25
+
+    speedup = sk_median / max(tb_median, 1e-6)
+
+    return {
+        "skimage_median_ms": sk_median,
+        "skimage_iqr_ms": sk_iqr,
+        "turbo_median_ms": tb_median,
+        "turbo_iqr_ms": tb_iqr,
+        "speedup": speedup,
+        "matches": matches,
+    }
+
+
+def run_all_benchmarks(iterations: int = 10) -> Dict[str, Any]:
+    """
+    Execute resolution benchmark suite and print markdown summary tables with metadata.
 
     :param iterations: Number of iterations per resolution.
-    :return: Benchmark results mapped by resolution tuple.
+    :return: Benchmark results mapped by category and resolution tuple.
     """
     has_resources = (
         os.path.exists(MODEL_PATH)
@@ -194,7 +259,7 @@ def run_all_benchmarks(iterations: int = 10) -> Dict[Tuple[int, int], Dict[str, 
     date_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
 
     print("\n" + "=" * 80)
-    print("Turbo HCE Performance Benchmark")
+    print("Turbo HCE Performance Benchmark (relax_HCE)")
     print("=" * 80)
     print(f"Date:         {date_str}")
     print(f"CPU:          {cpu_model}")
@@ -238,8 +303,40 @@ def run_all_benchmarks(iterations: int = 10) -> Dict[Tuple[int, int], Dict[str, 
         print(row)
 
     print("=" * 80 + "\n")
-    return all_results
+
+    print("=" * 80)
+    print("Skeletonize Performance Benchmark (scikit-image vs Turbo HCE)")
+    print("=" * 80)
+    sk_header = (
+        f"| {'Resolution (WxH)':<18} | {'skimage Median (IQR)':<22} | "
+        f"{'Turbo Median (IQR)':<20} | {'Speedup':<10} | {'Exact Match':<11} |"
+    )
+    print(sk_header)
+    print(sep)
+
+    skel_results: Dict[Tuple[int, int], Dict[str, Any]] = {}
+
+    for width, height in RESOLUTIONS:
+        gt_r = cv.resize(base_gt, (width, height), interpolation=cv.INTER_NEAREST)
+        bin_mask = gt_r > 128
+        sk_stats = benchmark_skeletonize_resolution(bin_mask, iterations=iterations)
+        skel_results[(width, height)] = sk_stats
+
+        res_str = f"{width}x{height}"
+        match_str = "YES" if sk_stats["matches"] else "NO"
+        sk_str = f"{sk_stats['skimage_median_ms']:.2f} (±{sk_stats['skimage_iqr_ms']:.2f}) ms"
+        tb_str = f"{sk_stats['turbo_median_ms']:.2f} (±{sk_stats['turbo_iqr_ms']:.2f}) ms"
+        row = (
+            f"| {res_str:<18} | {sk_str:>20} | {tb_str:>18} "
+            f"| {sk_stats['speedup']:>8.2f}x | {match_str:^11} |"
+        )
+        print(row)
+
+    print("=" * 80 + "\n")
+
+    return {"relax_hce": all_results, "skeletonize": skel_results}
 
 
 if __name__ == "__main__":
     run_all_benchmarks(iterations=10)
+
