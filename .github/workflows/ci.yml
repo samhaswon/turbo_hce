@@ -7,6 +7,7 @@ on:
   release:
     types:
       - created
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -71,6 +72,7 @@ jobs:
           docker run --rm \
             -e PLAT=manylinux_2_28_x86_64 \
             -v "${{ github.workspace }}:/io" \
+            --workdir /io \
             quay.io/pypa/manylinux_2_28_x86_64 \
             /bin/bash -ec '
               export PATH=/opt/python/cp312-cp312/bin:$PATH
