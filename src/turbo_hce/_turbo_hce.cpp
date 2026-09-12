@@ -787,8 +787,9 @@ bool parse_contours_list(
         return false;
     }
     if (num_contours > 10000000) {
-        PyErr_Format(PyExc_ValueError, "Sequence length %zd exceeds maximum supported contour count",
-                     num_contours);
+        PyErr_Format(
+            PyExc_ValueError, "Sequence length %zd exceeds maximum supported contour count",
+            num_contours);
         return false;
     }
 
@@ -960,7 +961,8 @@ static PyObject* relax_HCE_inner(PyObject* args, PyObject* kwargs) {
         std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
     } catch (...) {
         err_type = 3;
-        std::strncpy(err_buf, "Unknown C++ exception occurred during relax_HCE", sizeof(err_buf) - 1);
+        std::strncpy(
+            err_buf, "Unknown C++ exception occurred during relax_HCE", sizeof(err_buf) - 1);
     }
     Py_END_ALLOW_THREADS
 
@@ -1078,7 +1080,9 @@ static PyObject* filter_bdy_cond_inner(PyObject* args, PyObject* kwargs) {
         std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
     } catch (...) {
         err_type = 3;
-        std::strncpy(err_buf, "Unknown C++ exception occurred during filter_bdy_cond", sizeof(err_buf) - 1);
+        std::strncpy(
+            err_buf, "Unknown C++ exception occurred during filter_bdy_cond",
+            sizeof(err_buf) - 1);
     }
     Py_END_ALLOW_THREADS
 
@@ -1144,7 +1148,8 @@ static PyObject* py_filter_bdy_cond(PyObject* /*self*/, PyObject* args, PyObject
         return nullptr;
     } catch (...) {
         if (!PyErr_Occurred()) {
-            PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception occurred in filter_bdy_cond");
+            PyErr_SetString(
+                PyExc_RuntimeError, "Unknown C++ exception occurred in filter_bdy_cond");
         }
         return nullptr;
     }
@@ -1195,7 +1200,9 @@ static PyObject* approximate_RDP_inner(PyObject* args, PyObject* kwargs) {
         std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
     } catch (...) {
         err_type = 3;
-        std::strncpy(err_buf, "Unknown C++ exception occurred during approximate_RDP", sizeof(err_buf) - 1);
+        std::strncpy(
+            err_buf, "Unknown C++ exception occurred during approximate_RDP",
+            sizeof(err_buf) - 1);
     }
     Py_END_ALLOW_THREADS
 
@@ -1290,7 +1297,8 @@ static PyObject* py_approximate_RDP(PyObject* /*self*/, PyObject* args, PyObject
         return nullptr;
     } catch (...) {
         if (!PyErr_Occurred()) {
-            PyErr_SetString(PyExc_RuntimeError, "Unknown C++ exception occurred in approximate_RDP");
+            PyErr_SetString(
+                PyExc_RuntimeError, "Unknown C++ exception occurred in approximate_RDP");
         }
         return nullptr;
     }
@@ -1379,7 +1387,8 @@ static PyObject* skeletonize_inner(PyObject* args, PyObject* kwargs) {
         std::strncpy(err_buf, e.what(), sizeof(err_buf) - 1);
     } catch (...) {
         err_type = 3;
-        std::strncpy(err_buf, "Unknown C++ exception occurred during skeletonize", sizeof(err_buf) - 1);
+        std::strncpy(
+            err_buf, "Unknown C++ exception occurred during skeletonize", sizeof(err_buf) - 1);
     }
     Py_END_ALLOW_THREADS
 
