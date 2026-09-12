@@ -96,6 +96,41 @@ class TestSkeletonize(unittest.TestCase):
             with self.subTest(dtype=image.dtype):
                 self.assert_matches_reference(image)
 
+    def test_simd_lane_boundary_dimensions(self) -> None:
+        """Match reference on dimensions surrounding 32-byte SIMD lane boundaries."""
+        generator = np.random.default_rng(1337)
+        test_sizes = (1, 2, 15, 16, 31, 32, 33, 63, 64, 65)
+        for h in (5, 16, 33):
+            for w in test_sizes:
+                with self.subTest(shape=(h, w)):
+                    mask = generator.random((h, w)) > 0.4
+                    self.assert_matches_reference(mask)
+
+    def test_translated_small_roi(self) -> None:
+        """Verify small ROIs positioned at corners and center of large canvas."""
+        canvas_h, canvas_w = 256, 256
+        positions = [(0, 0), (120, 120), (canvas_h - 30, canvas_w - 30)]
+        for r_pos, c_pos in positions:
+            with self.subTest(position=(r_pos, c_pos)):
+                canvas = np.zeros((canvas_h, canvas_w), dtype=bool)
+                canvas[r_pos:r_pos + 20, c_pos:c_pos + 20] = True
+                canvas[r_pos + 5:r_pos + 15, c_pos + 5:c_pos + 15] = False
+                self.assert_matches_reference(canvas)
+
+    def test_multithreaded_concurrent_execution(self) -> None:
+        """Verify GIL release and thread safety under concurrent calls."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        generator = np.random.default_rng(2026)
+        masks = [generator.random((128, 128)) > 0.5 for _ in range(16)]
+        expected = [skimage_skeletonize(m) for m in masks]
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(turbo_hce.skeletonize, masks))
+
+        for actual_res, exp_res in zip(results, expected):
+            np.testing.assert_array_equal(actual_res, exp_res)
+
     def test_rejects_non_two_dimensional_input(self) -> None:
         """Reject dimensions outside the prototype's explicitly 2D API."""
         for image in (np.zeros(8, dtype=bool), np.zeros((2, 3, 4), dtype=bool)):

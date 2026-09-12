@@ -12,10 +12,10 @@
 - Enforced memory alignment via `NPY_ARRAY_ALIGNED` preventing undefined behavior on unaligned NumPy buffers.
 - Complete `noexcept` C++ exception boundary protecting the CPython ABI against process aborts: OpenCV assertions, memory errors (`std::bad_alloc`), and sequence length errors (`std::length_error`) are safely converted into standard Python exceptions.
 - Exact output match with reference Python implementation across tested dtypes, boundary edge cases, synthetic shapes, and dataset samples.
-- Native C++ Zhang-Suen 2D morphological skeletonization algorithm (`turbo_hce.skeletonize`) matching `skimage.morphology.skeletonize` output bit-for-bit.
+- Native C++ Zhang-Suen 2D morphological skeletonization algorithm (`turbo_hce.skeletonize`) matching `skimage.morphology.skeletonize` output bit-for-bit, delivering 6.4x to 17.5x speedup via AVX2 256-bit bitset evaluation, ROI cropping, O(1) bound contraction, and direct buffer output.
 - Both original (`relax_HCE`, `approximate_RDP`) and PEP8-compliant (`relax_hce`, `approximate_rdp`) APIs.
 - Portable synthetic integration tests runnable on any environment without external model or dataset assets.
-- Measured 6.1x to 12.7x median speedup for relax_HCE across multiple image resolutions.
+- Measured 6.1x to 12.9x median speedup for `relax_HCE` and 6.4x to 17.5x median speedup for `skeletonize` across multiple image resolutions.
 
 ## System Requirements
 
@@ -95,21 +95,21 @@ python test/benchmark_resolutions.py
 
 | Resolution (WxH) | Python Median (IQR) | C++ Median (IQR) | Speedup | Exact Match |
 |:-----------------|:--------------------|:-----------------|:--------|:------------|
-| 256x256          | 7.00 (±0.94) ms     | 0.55 (±0.10) ms  | 12.65x  | YES         |
-| 512x512          | 20.10 (±1.26) ms    | 1.59 (±0.11) ms  | 12.62x  | YES         |
-| 1024x1024        | 91.49 (±3.68) ms    | 9.10 (±1.53) ms  | 10.05x  | YES         |
-| 1200x1799        | 182.46 (±5.28) ms   | 26.97 (±7.15) ms | 6.76x   | YES         |
-| 2048x2048        | 395.99 (±41.86) ms  | 64.62 (±7.94) ms | 6.13x   | YES         |
+| 256x256          | 6.35 (±1.57) ms     | 0.60 (±0.21) ms  | 10.62x  | YES         |
+| 512x512          | 22.10 (±1.58) ms    | 1.71 (±0.46) ms  | 12.94x  | YES         |
+| 1024x1024        | 92.96 (±2.21) ms    | 8.41 (±1.31) ms  | 11.06x  | YES         |
+| 1200x1799        | 192.86 (±7.41) ms   | 29.57 (±5.81) ms | 6.52x   | YES         |
+| 2048x2048        | 438.15 (±127.59) ms | 65.87 (±11.25) ms| 6.65x   | YES         |
 
 ##### `skeletonize` (`skimage.morphology.skeletonize` vs `turbo_hce.skeletonize`)
 
 | Resolution (WxH) | skimage Median (IQR) | Turbo Median (IQR) | Speedup | Exact Match |
 |:-----------------|:---------------------|:-------------------|:--------|:------------|
-| 256x256          | 4.39 (±0.12) ms      | 4.39 (±0.15) ms    | 1.00x   | YES         |
-| 512x512          | 31.39 (±0.80) ms     | 33.99 (±3.16) ms   | 0.92x   | YES         |
-| 1024x1024        | 234.70 (±24.86) ms   | 268.82 (±46.38) ms | 0.87x   | YES         |
-| 1200x1799        | 841.31 (±28.70) ms   | 872.34 (±40.82) ms | 0.96x   | YES         |
-| 2048x2048        | 1837.32 (±27.38) ms  | 1867.78 (±160.48) ms| 0.98x  | YES         |
+| 256x256          | 4.41 (±0.17) ms      | 0.68 (±0.02) ms    | 6.44x   | YES         |
+| 512x512          | 31.05 (±1.01) ms     | 3.23 (±0.10) ms    | 9.62x   | YES         |
+| 1024x1024        | 207.97 (±3.25) ms    | 15.21 (±0.28) ms   | 13.67x  | YES         |
+| 1200x1799        | 678.04 (±34.78) ms   | 38.82 (±1.94) ms   | 17.47x  | YES         |
+| 2048x2048        | 1915.20 (±122.43) ms | 160.29 (±56.38) ms | 11.95x  | YES         |
 
 ### Run All Tests
 

@@ -1338,18 +1338,33 @@ static PyObject* skeletonize_inner(PyObject* args, PyObject* kwargs) {
     }
 
     cv::Mat in_mat;
-    if (!extract_binarized_2d(py_image, "image", true, false, in_mat)) {
-        return nullptr;
+    const uint8_t* in_ptr = nullptr;
+    if ((PyArray_TYPE(orig_arr) == NPY_BOOL || PyArray_TYPE(orig_arr) == NPY_UINT8) &&
+        PyArray_IS_C_CONTIGUOUS(orig_arr) && PyArray_ISALIGNED(orig_arr)) {
+        in_ptr = reinterpret_cast<const uint8_t*>(PyArray_DATA(orig_arr));
+    } else {
+        if (!extract_binarized_2d(py_image, "image", true, false, in_mat)) {
+            return nullptr;
+        }
+        in_ptr = in_mat.data;
     }
 
-    std::vector<uint8_t> skeleton;
+    npy_intp out_dims[2] = {h, w};
+    PyObject* out_arr = PyArray_SimpleNew(2, out_dims, NPY_BOOL);
+    if (!out_arr) {
+        return nullptr;
+    }
+    uint8_t* out_ptr = reinterpret_cast<uint8_t*>(
+        PyArray_DATA(reinterpret_cast<PyArrayObject*>(out_arr))
+    );
+
     char err_buf[256] = {0};
     int err_type = 0;
 
     Py_BEGIN_ALLOW_THREADS
     try {
-        skeleton = turbo_hce::morphology::skeletonize_zhang_suen(
-            in_mat.data, static_cast<size_t>(h), static_cast<size_t>(w)
+        turbo_hce::morphology::skeletonize_zhang_suen(
+            in_ptr, static_cast<size_t>(h), static_cast<size_t>(w), out_ptr
         );
     } catch (const std::bad_alloc&) {
         err_type = 1;
@@ -1368,29 +1383,18 @@ static PyObject* skeletonize_inner(PyObject* args, PyObject* kwargs) {
     }
     Py_END_ALLOW_THREADS
 
-    if (err_type == 1) {
-        return PyErr_NoMemory();
-    }
-    if (err_type == 2) {
-        PyErr_SetString(PyExc_ValueError, err_buf);
-        return nullptr;
-    }
-    if (err_type == 3) {
+    if (err_type != 0) {
+        Py_DECREF(out_arr);
+        if (err_type == 1) {
+            return PyErr_NoMemory();
+        }
+        if (err_type == 2) {
+            PyErr_SetString(PyExc_ValueError, err_buf);
+            return nullptr;
+        }
         PyErr_SetString(PyExc_RuntimeError, err_buf);
         return nullptr;
     }
-
-    npy_intp out_dims[2] = {h, w};
-    PyObject* out_arr = PyArray_SimpleNew(2, out_dims, NPY_BOOL);
-    if (!out_arr) {
-        return nullptr;
-    }
-
-    std::memcpy(
-        PyArray_DATA(reinterpret_cast<PyArrayObject*>(out_arr)),
-        skeleton.data(),
-        skeleton.size()
-    );
 
     return out_arr;
 }

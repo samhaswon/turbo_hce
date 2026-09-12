@@ -21,6 +21,11 @@ namespace turbo_hce::morphology {
  * :throws std::invalid_argument: If a non-empty input has a null pointer.
  * :throws std::length_error: If rows * columns cannot be represented.
  */
+void skeletonize_zhang_suen(const std::uint8_t* input,
+                            std::size_t rows,
+                            std::size_t columns,
+                            std::uint8_t* output);
+
 std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
                                                   std::size_t rows,
                                                   std::size_t columns);

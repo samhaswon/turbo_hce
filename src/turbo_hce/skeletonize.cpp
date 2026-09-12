@@ -51,6 +51,16 @@ inline int count_trailing_zeros(const unsigned int mask) noexcept {
 #endif
 }
 
+inline int find_highest_bit(const unsigned int mask) noexcept {
+#if defined(_MSC_VER)
+    unsigned long index = 0;
+    _BitScanReverse(&index, mask);
+    return static_cast<int>(index);
+#else
+    return 31 - __builtin_clz(mask);
+#endif
+}
+
 std::size_t checked_pixel_count(const std::size_t rows, const std::size_t columns) {
     if (rows == 0 || columns == 0) {
         return 0;
@@ -61,17 +71,35 @@ std::size_t checked_pixel_count(const std::size_t rows, const std::size_t column
     return rows * columns;
 }
 
+alignas(32) constexpr std::uint8_t BITMAP_PASS0[32] = {
+    0xc8, 0xdc, 0x00, 0xd0, 0x00, 0x01, 0x00, 0x10,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x11,
+    0xcc, 0x80, 0x00, 0x80, 0x03, 0x00, 0x00, 0x00,
+    0xce, 0x80, 0x00, 0x00, 0x8a, 0x00, 0x0b, 0x00
+};
+
+alignas(32) constexpr std::uint8_t BITMAP_PASS1[32] = {
+    0x80, 0x84, 0x00, 0xd5, 0x00, 0x01, 0x00, 0xd1,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x11, 0x01, 0x51,
+    0x84, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+    0x8b, 0x00, 0x00, 0x00, 0x03, 0x00, 0x03, 0x13
+};
+
 }  // namespace
 
-std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
-                                                  const std::size_t rows,
-                                                  const std::size_t columns) {
+void skeletonize_zhang_suen(const std::uint8_t* input,
+                            const std::size_t rows,
+                            const std::size_t columns,
+                            std::uint8_t* output) {
     const std::size_t pixel_count = checked_pixel_count(rows, columns);
     if (pixel_count == 0) {
-        return {};
+        return;
     }
     if (input == nullptr) {
         throw std::invalid_argument("non-empty skeleton image requires an input buffer");
+    }
+    if (output == nullptr) {
+        throw std::invalid_argument("non-empty skeleton image requires an output buffer");
     }
 
     if (rows > std::numeric_limits<std::size_t>::max() - 2 ||
@@ -79,109 +107,185 @@ std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
         throw std::length_error("skeleton image dimensions overflow size_t");
     }
 
-    const std::size_t padded_rows = rows + 2;
-    const std::size_t padded_cols = columns + 2;
+    // 1. Initial scan: discover foreground bounding box
+    std::size_t min_row = rows;
+    std::size_t max_row = 0;
+    std::size_t min_col = columns;
+    std::size_t max_col = 0;
+
+#if defined(__AVX2__)
+    const __m256i zero256 = _mm256_setzero_si256();
+    for (std::size_t r = 0; r < rows; ++r) {
+        const std::uint8_t* in_row = input + r * columns;
+        std::size_t c = 0;
+        for (; c + 32 <= columns; c += 32) {
+            const __m256i v = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(in_row + c));
+            if (_mm256_testz_si256(v, v)) {
+                continue;
+            }
+            const uint32_t is_zero_mask = static_cast<uint32_t>(
+                _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, zero256)));
+            uint32_t nonzero_mask = ~is_zero_mask;
+            if (r < min_row) min_row = r;
+            max_row = r;
+            const std::size_t first_c = c + static_cast<std::size_t>(count_trailing_zeros(nonzero_mask));
+            if (first_c < min_col) min_col = first_c;
+            const std::size_t last_c = c + static_cast<std::size_t>(find_highest_bit(nonzero_mask));
+            if (last_c > max_col) max_col = last_c;
+        }
+        for (; c < columns; ++c) {
+            if (in_row[c] != 0) {
+                if (r < min_row) min_row = r;
+                max_row = r;
+                if (c < min_col) min_col = c;
+                if (c > max_col) max_col = c;
+            }
+        }
+    }
+#else
+    for (std::size_t r = 0; r < rows; ++r) {
+        const std::uint8_t* in_row = input + r * columns;
+        for (std::size_t c = 0; c < columns; ++c) {
+            if (in_row[c] != 0) {
+                if (r < min_row) min_row = r;
+                max_row = r;
+                if (c < min_col) min_col = c;
+                if (c > max_col) max_col = c;
+            }
+        }
+    }
+#endif
+
+    // Completely blank input: return all zeros immediately
+    if (min_row > max_row || min_col > max_col) {
+        std::memset(output, 0, pixel_count);
+        return;
+    }
+
+    // Zero-initialize the entire output buffer
+    std::memset(output, 0, pixel_count);
+
+    // 2. Crop working image to ROI plus 1-pixel zero-padded halo
+    const std::size_t roi_h = max_row - min_row + 1;
+    const std::size_t roi_w = max_col - min_col + 1;
+
+    const std::size_t padded_cols = roi_w + 2;
+    const std::size_t padded_rows = roi_h + 2;
     if (padded_rows > std::numeric_limits<std::size_t>::max() / padded_cols) {
         throw std::length_error("skeleton image dimensions overflow size_t");
     }
 
     const std::size_t padded_size = padded_rows * padded_cols;
     std::vector<std::uint8_t> pad(padded_size, 0);
+    std::vector<std::uint32_t> row_counts(padded_rows, 0);
+    std::vector<std::uint32_t> col_counts(padded_cols, 0);
 
-    std::size_t min_row = rows + 1;
-    std::size_t max_row = 0;
-    std::size_t min_col = columns + 1;
-    std::size_t max_col = 0;
-
-    for (std::size_t r = 0; r < rows; ++r) {
-        const std::uint8_t* in_row = input + r * columns;
+#if defined(__AVX2__)
+    const __m256i one256 = _mm256_set1_epi8(1);
+    for (std::size_t r = 0; r < roi_h; ++r) {
+        const std::uint8_t* in_row = input + (min_row + r) * columns + min_col;
         std::uint8_t* pad_row = pad.data() + (r + 1) * padded_cols + 1;
-        bool has_fg = false;
-        for (std::size_t c = 0; c < columns; ++c) {
-            if (in_row[c] != 0) {
-                pad_row[c] = 1;
-                has_fg = true;
-                if (c + 1 < min_col) min_col = c + 1;
-                if (c + 1 > max_col) max_col = c + 1;
+        const std::size_t pad_r = r + 1;
+        std::size_t c = 0;
+        for (; c + 32 <= roi_w; c += 32) {
+            const __m256i v = _mm256_loadu_si256(
+                reinterpret_cast<const __m256i*>(in_row + c));
+            if (_mm256_testz_si256(v, v)) {
+                continue;
+            }
+            const __m256i is_zero = _mm256_cmpeq_epi8(v, zero256);
+            const __m256i is_nz = _mm256_andnot_si256(is_zero, one256);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(pad_row + c), is_nz);
+            uint32_t nonzero_mask = ~static_cast<uint32_t>(_mm256_movemask_epi8(is_zero));
+            row_counts[pad_r] += static_cast<uint32_t>(_mm_popcnt_u32(nonzero_mask));
+            while (nonzero_mask != 0) {
+                const int bit = count_trailing_zeros(nonzero_mask);
+                col_counts[c + bit + 1]++;
+                nonzero_mask &= nonzero_mask - 1;
             }
         }
-        if (has_fg) {
-            if (min_row > rows) min_row = r + 1;
-            max_row = r + 1;
+        for (; c < roi_w; ++c) {
+            if (in_row[c] != 0) {
+                pad_row[c] = 1;
+                row_counts[pad_r]++;
+                col_counts[c + 1]++;
+            }
         }
     }
-
-    if (min_row > max_row) {
-        return std::vector<std::uint8_t>(pixel_count, 0);
+#else
+    for (std::size_t r = 0; r < roi_h; ++r) {
+        const std::uint8_t* in_row = input + (min_row + r) * columns + min_col;
+        std::uint8_t* pad_row = pad.data() + (r + 1) * padded_cols + 1;
+        const std::size_t pad_r = r + 1;
+        for (std::size_t c = 0; c < roi_w; ++c) {
+            if (in_row[c] != 0) {
+                pad_row[c] = 1;
+                const std::size_t pad_c = c + 1;
+                row_counts[pad_r]++;
+                col_counts[pad_c]++;
+            }
+        }
     }
+#endif
 
-    std::vector<std::size_t> to_delete;
-    to_delete.reserve(std::min<std::size_t>(pixel_count / 4, 131072));
+    std::size_t cur_min_r = 1;
+    std::size_t cur_max_r = roi_h;
+    std::size_t cur_min_c = 1;
+    std::size_t cur_max_c = roi_w;
+
+#if defined(__AVX2__)
+    const __m256i pow2_lut = _mm256_setr_epi8(
+        1, 2, 4, 8, 16, 32, 64, static_cast<char>(128),
+        0, 0, 0, 0, 0, 0, 0, 0,
+        1, 2, 4, 8, 16, 32, 64, static_cast<char>(128),
+        0, 0, 0, 0, 0, 0, 0, 0
+    );
+
+    const __m256i t_low_0 = _mm256_broadcastsi128_si256(
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(BITMAP_PASS0)));
+    const __m256i t_high_0 = _mm256_broadcastsi128_si256(
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(BITMAP_PASS0 + 16)));
+
+    const __m256i t_low_1 = _mm256_broadcastsi128_si256(
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(BITMAP_PASS1)));
+    const __m256i t_high_1 = _mm256_broadcastsi128_si256(
+        _mm_loadu_si128(reinterpret_cast<const __m128i*>(BITMAP_PASS1 + 16)));
+#endif
+
+    struct Deletion {
+        std::size_t idx;
+        std::size_t r;
+        std::size_t c;
+    };
+    std::vector<Deletion> to_delete;
+    to_delete.reserve(std::min<std::size_t>(padded_size / 4, 131072));
 
     bool pixel_removed = true;
     while (pixel_removed) {
         pixel_removed = false;
 
-#if defined(__AVX2__)
-        // Contract active row bounds
-        while (min_row <= max_row) {
-            const std::uint8_t* row_ptr = pad.data() + min_row * padded_cols + 1;
-            std::size_t c = 0;
-            bool has_fg = false;
-            for (; c + 32 <= columns; c += 32) {
-                const __m256i v = _mm256_loadu_si256(
-                    reinterpret_cast<const __m256i*>(row_ptr + c));
-                if (!_mm256_testz_si256(v, v)) {
-                    has_fg = true;
-                    break;
-                }
-            }
-            if (!has_fg) {
-                for (; c < columns; ++c) {
-                    if (row_ptr[c] != 0) {
-                        has_fg = true;
-                        break;
-                    }
-                }
-            }
-            if (has_fg) break;
-            ++min_row;
-        }
+        // O(1) Contraction using row and column foreground counts
+        while (cur_min_r <= cur_max_r && row_counts[cur_min_r] == 0) ++cur_min_r;
+        while (cur_max_r >= cur_min_r && row_counts[cur_max_r] == 0) --cur_max_r;
+        while (cur_min_c <= cur_max_c && col_counts[cur_min_c] == 0) ++cur_min_c;
+        while (cur_max_c >= cur_min_c && col_counts[cur_max_c] == 0) --cur_max_c;
 
-        while (max_row >= min_row) {
-            const std::uint8_t* row_ptr = pad.data() + max_row * padded_cols + 1;
-            std::size_t c = 0;
-            bool has_fg = false;
-            for (; c + 32 <= columns; c += 32) {
-                const __m256i v = _mm256_loadu_si256(
-                    reinterpret_cast<const __m256i*>(row_ptr + c));
-                if (!_mm256_testz_si256(v, v)) {
-                    has_fg = true;
-                    break;
-                }
-            }
-            if (!has_fg) {
-                for (; c < columns; ++c) {
-                    if (row_ptr[c] != 0) {
-                        has_fg = true;
-                        break;
-                    }
-                }
-            }
-            if (has_fg) break;
-            if (max_row == 0) break;
-            --max_row;
-        }
+        if (cur_min_r > cur_max_r || cur_min_c > cur_max_c) break;
 
-        if (min_row > max_row) break;
-
-        const std::size_t c_start = (min_col > 32) ? (((min_col - 1) / 32) * 32 + 1) : 1;
-        const std::size_t c_end = std::min<std::size_t>(columns, max_col);
+        const std::size_t c_start = cur_min_c;
+        const std::size_t c_end = cur_max_c;
 
         for (std::uint8_t pass = 0; pass < 2; ++pass) {
             const std::uint8_t pass_mask = (pass == 0) ? 1 : 2;
 
-            for (std::size_t r = min_row; r <= max_row; ++r) {
+#if defined(__AVX2__)
+            const __m256i t_low = (pass == 0) ? t_low_0 : t_low_1;
+            const __m256i t_high = (pass == 0) ? t_high_0 : t_high_1;
+
+            for (std::size_t r = cur_min_r; r <= cur_max_r; ++r) {
+                if (row_counts[r] == 0) continue;
+
                 const std::size_t r_offset = r * padded_cols;
                 const std::size_t prev_row = r_offset - padded_cols;
                 const std::size_t next_row = r_offset + padded_cols;
@@ -231,11 +335,11 @@ std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
                     const __m256i candidate_vec = _mm256_andnot_si256(
                         mask_interior, mask_center);
 
-                    std::uint32_t candidate_mask = _mm256_movemask_epi8(candidate_vec);
-                    if (candidate_mask == 0) {
+                    if (_mm256_testz_si256(candidate_vec, candidate_vec)) {
                         continue;
                     }
 
+                    // Compute neighborhood codes via SIMD shifts and ORs
                     __m256i code_vec = n0;
                     code_vec = _mm256_or_si256(code_vec, _mm256_slli_epi16(n1, 1));
                     code_vec = _mm256_or_si256(code_vec, _mm256_slli_epi16(n2, 2));
@@ -245,19 +349,32 @@ std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
                     code_vec = _mm256_or_si256(code_vec, _mm256_slli_epi16(n6, 6));
                     code_vec = _mm256_or_si256(code_vec, _mm256_slli_epi16(n7, 7));
 
-                    alignas(32) std::uint8_t codes[32];
-                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(codes), code_vec);
+                    // AVX2 256-bit bitset predicate: evaluates exact deletion eligibility in SIMD
+                    const __m256i byte_idx = _mm256_and_si256(
+                        _mm256_srli_epi16(code_vec, 3), _mm256_set1_epi8(0x1F));
+                    const __m256i bit_idx = _mm256_and_si256(code_vec, _mm256_set1_epi8(0x07));
 
-                    while (candidate_mask != 0) {
-                        const int bit = count_trailing_zeros(candidate_mask);
-                        const std::uint8_t code = codes[bit];
-                        if (ZHANG_SUEN_LUT[code] & pass_mask) {
-                            to_delete.push_back(r_offset + c + bit);
-                        }
-                        candidate_mask &= candidate_mask - 1;
+                    const __m256i val_low = _mm256_shuffle_epi8(t_low, byte_idx);
+                    const __m256i idx_high = _mm256_sub_epi8(byte_idx, _mm256_set1_epi8(16));
+                    const __m256i val_high = _mm256_shuffle_epi8(t_high, idx_high);
+                    const __m256i is_high = _mm256_cmpgt_epi8(byte_idx, _mm256_set1_epi8(15));
+                    const __m256i val_byte = _mm256_blendv_epi8(val_low, val_high, is_high);
+
+                    const __m256i bit_mask = _mm256_shuffle_epi8(pow2_lut, bit_idx);
+                    const __m256i bit_test = _mm256_and_si256(val_byte, bit_mask);
+                    const __m256i is_deletable = _mm256_cmpeq_epi8(bit_test, bit_mask);
+
+                    uint32_t delete_mask = _mm256_movemask_epi8(
+                        _mm256_and_si256(is_deletable, candidate_vec));
+
+                    while (delete_mask != 0) {
+                        const int bit = count_trailing_zeros(delete_mask);
+                        to_delete.push_back({r_offset + c + bit, r, c + bit});
+                        delete_mask &= delete_mask - 1;
                     }
                 }
 
+                // Remainder columns
                 for (; c <= c_end; ++c) {
                     const std::size_t idx = r_offset + c;
                     if (pad[idx] == 0) continue;
@@ -274,27 +391,14 @@ std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
                     );
 
                     if (ZHANG_SUEN_LUT[code] & pass_mask) {
-                        to_delete.push_back(idx);
+                        to_delete.push_back({idx, r, c});
                     }
                 }
             }
-
-            if (!to_delete.empty()) {
-                pixel_removed = true;
-                for (const auto del_idx : to_delete) {
-                    pad[del_idx] = 0;
-                }
-                to_delete.clear();
-            }
-        }
 #else
-        const std::size_t c_start = (min_col >= 1) ? min_col : 1;
-        const std::size_t c_end = std::min<std::size_t>(columns, max_col);
+            for (std::size_t r = cur_min_r; r <= cur_max_r; ++r) {
+                if (row_counts[r] == 0) continue;
 
-        for (std::uint8_t pass = 0; pass < 2; ++pass) {
-            const std::uint8_t pass_mask = (pass == 0) ? 1 : 2;
-
-            for (std::size_t r = min_row; r <= max_row; ++r) {
                 const std::size_t r_offset = r * padded_cols;
                 const std::size_t prev_row = r_offset - padded_cols;
                 const std::size_t next_row = r_offset + padded_cols;
@@ -315,29 +419,41 @@ std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
                     );
 
                     if (ZHANG_SUEN_LUT[code] & pass_mask) {
-                        to_delete.push_back(idx);
+                        to_delete.push_back({idx, r, c});
                     }
                 }
             }
+#endif
 
             if (!to_delete.empty()) {
                 pixel_removed = true;
-                for (const auto del_idx : to_delete) {
-                    pad[del_idx] = 0;
+                for (const auto& del : to_delete) {
+                    pad[del.idx] = 0;
+                    row_counts[del.r]--;
+                    col_counts[del.c]--;
                 }
                 to_delete.clear();
             }
         }
-#endif
     }
 
+    // Copy thinned ROI back into output buffer at original offset
+    for (std::size_t r = 0; r < roi_h; ++r) {
+        std::memcpy(output + (min_row + r) * columns + min_col,
+                    pad.data() + (r + 1) * padded_cols + 1,
+                    roi_w);
+    }
+}
+
+std::vector<std::uint8_t> skeletonize_zhang_suen(const std::uint8_t* input,
+                                                  const std::size_t rows,
+                                                  const std::size_t columns) {
+    const std::size_t pixel_count = checked_pixel_count(rows, columns);
+    if (pixel_count == 0) {
+        return {};
+    }
     std::vector<std::uint8_t> result(pixel_count);
-    for (std::size_t r = 0; r < rows; ++r) {
-        const std::uint8_t* pad_row = pad.data() + (r + 1) * padded_cols + 1;
-        std::uint8_t* res_row = result.data() + r * columns;
-        std::memcpy(res_row, pad_row, columns);
-    }
-
+    skeletonize_zhang_suen(input, rows, columns, result.data());
     return result;
 }
 
