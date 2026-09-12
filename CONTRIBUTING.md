@@ -112,3 +112,7 @@ NumPy 2.5.3, and OpenCV 5.0.0, the results were as follows.
 
 Performance is hardware-dependent. Include the CPU, OS, Python/NumPy versions,
 and benchmark method when sharing new measurements.
+
+## Releasing
+
+The version number is at the top of [`src/turbo_hce/__init__.py`](src/turbo_hce/__init__.py) and is dynamically pulled in when the package is built.
