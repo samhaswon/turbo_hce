@@ -51,6 +51,7 @@ def build_opencv_if_needed(opencv_build_dir: str):
     cmake_args = [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
+        "-DBUILD_WITH_STATIC_CRT=OFF",
         "-DBUILD_LIST=core,imgproc,geometry",
         "-DBUILD_opencv_apps=OFF",
         "-DBUILD_DOCS=OFF",
@@ -147,7 +148,7 @@ if sys.platform.startswith("linux"):
 elif sys.platform == "darwin":
     libraries = ["z", "m", "pthread"]
 elif sys.platform == "win32":
-    libraries = []
+    libraries = ["ole32"]
 
 turbo_hce_ext = Extension(
     name="turbo_hce._turbo_hce",
