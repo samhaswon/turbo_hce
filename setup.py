@@ -117,8 +117,7 @@ extra_objects = [
     os.path.join(opencv_dir, "lib", f"{lib_prefix}opencv_core{lib_ext}"),
 ]
 ittnotify = os.path.join(opencv_dir, "3rdparty", "lib", f"{lib_prefix}ittnotify{lib_ext}")
-if os.path.exists(ittnotify):
-    extra_objects.append(ittnotify)
+extra_objects.append(ittnotify)
 
 libraries = []
 if sys.platform.startswith("linux"):
