@@ -1,3 +1,4 @@
+import glob
 import os
 import platform
 import subprocess
@@ -10,12 +11,35 @@ REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 OPENCV_SRC = os.path.join(REPO_ROOT, "opencv")
 
 
+def find_windows_static_library(opencv_build_dir: str, library_name: str) -> str | None:
+    """Find a release static library produced by a Visual Studio OpenCV build."""
+    library_dirs = (
+        os.path.join(opencv_build_dir, "lib", "Release"),
+        os.path.join(opencv_build_dir, "lib"),
+        os.path.join(opencv_build_dir, "3rdparty", "lib", "Release"),
+        os.path.join(opencv_build_dir, "3rdparty", "lib"),
+    )
+    for library_dir in library_dirs:
+        matches = sorted(glob.glob(os.path.join(library_dir, f"{library_name}*.lib")))
+        release_matches = [
+            library_path
+            for library_path in matches
+            if not os.path.basename(library_path).endswith("d.lib")
+        ]
+        if release_matches:
+            return release_matches[0]
+    return None
+
+
 def get_opencv_build_dir() -> str:
     """Determine the OpenCV build directory, prioritizing existing build caches."""
     test_cache = os.path.join(REPO_ROOT, "build", "test_opencv")
     default_dir = os.path.join(REPO_ROOT, "build", "opencv")
-    lib_name = "libopencv_imgproc.a" if sys.platform != "win32" else "opencv_imgproc.lib"
-    if os.path.exists(os.path.join(test_cache, "lib", lib_name)):
+    if sys.platform == "win32":
+        has_test_cache = find_windows_static_library(test_cache, "opencv_imgproc") is not None
+    else:
+        has_test_cache = os.path.exists(os.path.join(test_cache, "lib", "libopencv_imgproc.a"))
+    if has_test_cache:
         return test_cache
     return default_dir
 
@@ -25,11 +49,16 @@ def build_opencv_if_needed(opencv_build_dir: str):
     lib_prefix = "" if sys.platform == "win32" else "lib"
     lib_ext = ".lib" if sys.platform == "win32" else ".a"
 
-    core_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_core{lib_ext}")
-    imgproc_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_imgproc{lib_ext}")
-    geometry_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_geometry{lib_ext}")
+    if sys.platform == "win32":
+        core_lib = find_windows_static_library(opencv_build_dir, "opencv_core")
+        imgproc_lib = find_windows_static_library(opencv_build_dir, "opencv_imgproc")
+        geometry_lib = find_windows_static_library(opencv_build_dir, "opencv_geometry")
+    else:
+        core_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_core{lib_ext}")
+        imgproc_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_imgproc{lib_ext}")
+        geometry_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_geometry{lib_ext}")
 
-    if os.path.exists(core_lib) and os.path.exists(imgproc_lib) and os.path.exists(geometry_lib):
+    if core_lib and imgproc_lib and geometry_lib:
         return
 
     os.makedirs(opencv_build_dir, exist_ok=True)
@@ -68,7 +97,10 @@ def build_opencv_if_needed(opencv_build_dir: str):
 
     subprocess.check_call(["cmake", OPENCV_SRC] + cmake_args, cwd=opencv_build_dir)
     num_jobs = str(os.cpu_count() or 4)
-    subprocess.check_call(["cmake", "--build", ".", "-j", num_jobs], cwd=opencv_build_dir)
+    build_command = ["cmake", "--build", ".", "-j", num_jobs]
+    if sys.platform == "win32":
+        build_command.extend(["--config", "Release"])
+    subprocess.check_call(build_command, cwd=opencv_build_dir)
 
 
 class CustomBuildExt(build_ext):
@@ -77,6 +109,9 @@ class CustomBuildExt(build_ext):
     def run(self):
         opencv_build_dir = get_opencv_build_dir()
         build_opencv_if_needed(opencv_build_dir)
+        if sys.platform == "win32":
+            for extension in self.extensions:
+                extension.extra_objects = get_windows_extra_objects(opencv_build_dir)
         super().run()
 
 
@@ -118,6 +153,18 @@ extra_objects = [
 ]
 ittnotify = os.path.join(opencv_dir, "3rdparty", "lib", f"{lib_prefix}ittnotify{lib_ext}")
 extra_objects.append(ittnotify)
+
+
+def get_windows_extra_objects(opencv_build_dir: str) -> list[str]:
+    """Return the release OpenCV archives needed by the Windows extension build."""
+    library_names = ("opencv_imgproc", "opencv_geometry", "opencv_core", "ittnotify")
+    library_paths = [
+        find_windows_static_library(opencv_build_dir, library_name)
+        for library_name in library_names
+    ]
+    if any(library_path is None for library_path in library_paths):
+        raise RuntimeError("OpenCV build did not produce all required Windows static libraries.")
+    return [library_path for library_path in library_paths if library_path is not None]
 
 libraries = []
 if sys.platform.startswith("linux"):
