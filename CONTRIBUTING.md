@@ -30,6 +30,15 @@ That extra includes `onnxruntime`, `opencv-python`, Pillow, scikit-image, and
 Linux x86_64 is the configuration we test. ARM64 has build support but has not
 been tested; contributions that validate or improve it are welcome.
 
+## Lint
+
+Install Ruff and run the same focused correctness checks used by CI:
+
+```bash
+pip install ruff
+ruff check setup.py src
+```
+
 ## Test before submitting
 
 Tests use Python's built-in `unittest` runner.

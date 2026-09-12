@@ -3,7 +3,7 @@ include README.md
 include pyproject.toml
 include setup.py
 include setup.cfg
-recursive-include src *.cpp *.h *.py py.typed
+recursive-include src *.cpp *.h *.hpp *.py py.typed
 graft opencv
 prune opencv/.git
 prune build
