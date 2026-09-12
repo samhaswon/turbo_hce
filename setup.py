@@ -11,6 +11,7 @@ REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 OPENCV_SRC = os.path.join(REPO_ROOT, "opencv")
 BUILD_HELPERS = runpy.run_path(os.path.join(REPO_ROOT, "build_helpers.py"))
 find_windows_static_library = BUILD_HELPERS["find_windows_static_library"]
+get_windows_extra_objects = BUILD_HELPERS["get_windows_extra_objects"]
 libraries_exist = BUILD_HELPERS["libraries_exist"]
 
 
@@ -139,17 +140,6 @@ extra_objects = [
 ittnotify = os.path.join(opencv_dir, "3rdparty", "lib", f"{lib_prefix}ittnotify{lib_ext}")
 extra_objects.append(ittnotify)
 
-
-def get_windows_extra_objects(opencv_build_dir: str) -> list[str]:
-    """Return the release OpenCV archives needed by the Windows extension build."""
-    library_names = ("opencv_imgproc", "opencv_geometry", "opencv_core", "ittnotify")
-    library_paths = [
-        find_windows_static_library(opencv_build_dir, library_name)
-        for library_name in library_names
-    ]
-    if any(library_path is None for library_path in library_paths):
-        raise RuntimeError("OpenCV build did not produce all required Windows static libraries.")
-    return [library_path for library_path in library_paths if library_path is not None]
 
 libraries = []
 if sys.platform.startswith("linux"):

@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from build_helpers import find_windows_static_library, libraries_exist
+from build_helpers import (
+    find_windows_static_library,
+    get_windows_extra_objects,
+    libraries_exist,
+)
 
 
 class TestBuildConfig(unittest.TestCase):
@@ -44,6 +48,25 @@ class TestBuildConfig(unittest.TestCase):
             self.assertFalse(
                 libraries_exist(str(existing_path), str(existing_path) + ".missing")
             )
+
+    def test_windows_ittnotify_is_optional(self) -> None:
+        """Accept a Windows OpenCV build that does not produce ITT Notify."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            library_dir = Path(temp_dir) / "lib" / "Release"
+            library_dir.mkdir(parents=True)
+            expected_paths = []
+            for library_name in ("opencv_imgproc", "opencv_geometry", "opencv_core"):
+                library_path = library_dir / f"lib{library_name}510.a"
+                library_path.touch()
+                expected_paths.append(str(library_path))
+
+            self.assertEqual(get_windows_extra_objects(temp_dir), expected_paths)
+
+    def test_windows_missing_library_error_names_archive(self) -> None:
+        """Name missing required archives in Windows build errors."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(RuntimeError, "opencv_imgproc"):
+                get_windows_extra_objects(temp_dir)
 
 
 if __name__ == "__main__":

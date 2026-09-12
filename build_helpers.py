@@ -40,3 +40,32 @@ def libraries_exist(*library_paths: str | None) -> bool:
         library_path is not None and os.path.exists(library_path)
         for library_path in library_paths
     )
+
+
+def get_windows_extra_objects(opencv_build_dir: str) -> list[str]:
+    """Return the static archives needed by the Windows extension build."""
+    required_library_names = ("opencv_imgproc", "opencv_geometry", "opencv_core")
+    required_library_paths = {
+        library_name: find_windows_static_library(opencv_build_dir, library_name)
+        for library_name in required_library_names
+    }
+    missing_library_names = [
+        library_name
+        for library_name, library_path in required_library_paths.items()
+        if library_path is None
+    ]
+    if missing_library_names:
+        missing_libraries = ", ".join(missing_library_names)
+        raise RuntimeError(
+            f"OpenCV build did not produce required Windows libraries: {missing_libraries}."
+        )
+
+    library_paths = [
+        library_path
+        for library_path in required_library_paths.values()
+        if library_path is not None
+    ]
+    ittnotify_path = find_windows_static_library(opencv_build_dir, "ittnotify")
+    if ittnotify_path is not None:
+        library_paths.append(ittnotify_path)
+    return library_paths
