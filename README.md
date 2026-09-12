@@ -45,6 +45,16 @@ skeleton is truthy. Native failures, including OpenCV errors and allocation
 failures, are translated to Python exceptions instead of escaping across the
 CPython boundary.
 
+## Installation
+
+Install Turbo HCE from PyPI:
+
+```bash
+python -m pip install turbo-hce
+```
+
+The distribution name is `turbo-hce`; import it in Python as `turbo_hce`.
+
 ## Requirements
 
 - Linux is the tested platform (Ubuntu 24.04, x86_64).
