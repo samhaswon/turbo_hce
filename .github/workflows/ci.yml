@@ -30,9 +30,15 @@ jobs:
         run: ruff check setup.py src
 
   test:
-    name: Build and test
+    name: Build and test (${{ matrix.os }})
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,6 +48,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+
+      - name: Use Ninja on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append'
 
       - name: Install package and test dependencies
         run: |

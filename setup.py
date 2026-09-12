@@ -87,7 +87,7 @@ extra_compile_args = []
 extra_link_args = []
 
 if sys.platform == "win32":
-    extra_compile_args += ["/O2", "/arch:AVX2", "/Qpar", "/std:c++17"]
+    extra_compile_args += ["/O2", "/arch:AVX2", "/std:c++17"]
 elif is_arm:
     extra_compile_args += ["-std=c++17", "-O3", "-flto", "-ffp-contract=fast"]
     extra_link_args += ["-flto"]
