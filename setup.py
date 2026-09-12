@@ -1,6 +1,6 @@
-import glob
 import os
 import platform
+import runpy
 import subprocess
 import sys
 from setuptools import setup, Extension
@@ -9,26 +9,9 @@ import numpy as np
 
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 OPENCV_SRC = os.path.join(REPO_ROOT, "opencv")
-
-
-def find_windows_static_library(opencv_build_dir: str, library_name: str) -> str | None:
-    """Find a release static library produced by a Visual Studio OpenCV build."""
-    library_dirs = (
-        os.path.join(opencv_build_dir, "lib", "Release"),
-        os.path.join(opencv_build_dir, "lib"),
-        os.path.join(opencv_build_dir, "3rdparty", "lib", "Release"),
-        os.path.join(opencv_build_dir, "3rdparty", "lib"),
-    )
-    for library_dir in library_dirs:
-        matches = sorted(glob.glob(os.path.join(library_dir, f"{library_name}*.lib")))
-        release_matches = [
-            library_path
-            for library_path in matches
-            if not os.path.basename(library_path).endswith("d.lib")
-        ]
-        if release_matches:
-            return release_matches[0]
-    return None
+BUILD_HELPERS = runpy.run_path(os.path.join(REPO_ROOT, "build_helpers.py"))
+find_windows_static_library = BUILD_HELPERS["find_windows_static_library"]
+libraries_exist = BUILD_HELPERS["libraries_exist"]
 
 
 def get_opencv_build_dir() -> str:
@@ -56,9 +39,11 @@ def build_opencv_if_needed(opencv_build_dir: str):
     else:
         core_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_core{lib_ext}")
         imgproc_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_imgproc{lib_ext}")
-        geometry_lib = os.path.join(opencv_build_dir, "lib", f"{lib_prefix}opencv_geometry{lib_ext}")
+        geometry_lib = os.path.join(
+            opencv_build_dir, "lib", f"{lib_prefix}opencv_geometry{lib_ext}"
+        )
 
-    if core_lib and imgproc_lib and geometry_lib:
+    if libraries_exist(core_lib, imgproc_lib, geometry_lib):
         return
 
     os.makedirs(opencv_build_dir, exist_ok=True)

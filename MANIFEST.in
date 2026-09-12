@@ -1,5 +1,6 @@
 include LICENSE
 include README.md
+include build_helpers.py
 include pyproject.toml
 include setup.py
 include setup.cfg

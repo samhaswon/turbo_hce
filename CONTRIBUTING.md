@@ -36,7 +36,7 @@ Install Ruff and run the same focused correctness checks used by CI:
 
 ```bash
 pip install ruff
-ruff check setup.py src
+ruff check build_helpers.py setup.py src
 ```
 
 ## Test before submitting

@@ -27,7 +27,7 @@ jobs:
         run: python -m pip install --upgrade ruff
 
       - name: Lint package and build script
-        run: ruff check setup.py src
+        run: ruff check build_helpers.py setup.py src
 
   test:
     name: Build and test (${{ matrix.os }})
