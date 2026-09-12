@@ -1,4 +1,10 @@
-# Turbo HCE 
+# Turbo HCE
+
+## v0.1.1
+
+- Add Windows build
+
+- Fix CI
 
 ## v0.1.0
 

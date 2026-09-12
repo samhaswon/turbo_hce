@@ -12,7 +12,7 @@ from ._turbo_hce import (
     skeletonize as _skeletonize,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 
 def relax_HCE(
